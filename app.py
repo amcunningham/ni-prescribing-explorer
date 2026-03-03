@@ -539,43 +539,39 @@ DEP_COLOURS = {1: "#d32f2f", 2: "#f57c00", 3: "#fbc02d", 4: "#66bb6a", 5: "#1e88
 QUINTILE_LABELS = {1: "Q1\nMost deprived", 2: "Q2", 3: "Q3", 4: "Q4", 5: "Q5\nLeast deprived"}
 QUINTILE_LABELS_FLAT = {1: "Q1 (most deprived)", 2: "Q2", 3: "Q3", 4: "Q4", 5: "Q5 (least deprived)"}
 
-# ── QOF domain ↔ therapeutic area mappings ─────────────────────────────
-# Each entry: QOF domain name → list of (therapeutic area name, description)
-QOF_PRESCRIBING_LINKS = {
-    "Diabetes": [
-        ("Diabetes (non-insulin)", "Non-insulin glucose-lowering agents vs diabetes QOF achievement"),
-        ("SGLT2 inhibitors", "SGLT2 inhibitors vs diabetes QOF achievement"),
-        ("GLP-1 receptor agonists", "GLP-1 RAs vs diabetes QOF achievement"),
-        ("DPP-4 inhibitors", "DPP-4 inhibitors vs diabetes QOF achievement"),
-    ],
-    "Asthma": [
-        ("All prescribing", "All prescribing vs asthma QOF achievement"),
-    ],
-    "CHD": [
-        ("Statins", "Statin prescribing vs CHD QOF achievement"),
-        ("Ezetimibe", "Ezetimibe prescribing vs CHD QOF achievement"),
-    ],
-    "Hypertension": [
-        ("All prescribing", "All prescribing vs hypertension QOF achievement"),
-    ],
-    "COPD": [
-        ("All prescribing", "All prescribing vs COPD QOF achievement"),
-    ],
-    "Mental Health": [
-        ("Antidepressants", "Antidepressant prescribing vs mental health QOF achievement"),
-    ],
-    "CKD": [
-        ("All prescribing", "All prescribing vs CKD QOF achievement"),
-    ],
-    "Heart Failure": [
-        ("All prescribing", "All prescribing vs heart failure QOF achievement"),
-    ],
-    "Stroke/TIA": [
-        ("Statins", "Statin prescribing vs stroke/TIA QOF achievement"),
-    ],
-    "Atrial Fibrillation": [
-        ("All prescribing", "All prescribing vs AF QOF achievement"),
-    ],
+# ── QOF: suggested therapeutic area per indicator ──────────────────────
+# When a user picks a QOF indicator, suggest the most clinically relevant
+# therapeutic area to plot against (user can override).
+QOF_SUGGESTED_TA = {
+    "DM008": "Diabetes (non-insulin)",
+    "DM009": "Diabetes (non-insulin)",
+    "DM006": "Diabetes (non-insulin)",
+    "DM012": "Diabetes (non-insulin)",
+    "DM022NI": "Statins",
+    "DM023NI": "Statins",
+    "DM024NI": "Diabetes (non-insulin)",
+    "CHD002": "Statins",
+    "CHD003NI": "Statins",
+    "CHD005": "Statins",
+    "HYP003NI": "All prescribing",
+    "HYP007": "All prescribing",
+    "AST003": "All prescribing",
+    "COPD003": "All prescribing",
+    "COPD005NI": "All prescribing",
+    "MH002": "Antidepressants",
+    "MH003": "Antidepressants",
+    "MH007": "Antidepressants",
+    "MH0011NI": "Antidepressants",
+    "MH0012NI": "Antidepressants",
+    "HF003": "All prescribing",
+    "HF004": "All prescribing",
+    "STIA005NI": "Statins",
+    "STIA007": "Statins",
+    "STIA010NI": "Statins",
+    "STIA011NI": "Statins",
+    "AF007": "All prescribing",
+    "CKD006NI": "All prescribing",
+    "CKD007NI": "All prescribing",
 }
 
 
@@ -1203,33 +1199,52 @@ def main():
     # ── TAB 5: QOF Achievement ─────────────────────────────────────────
     if tab_qof is not None:
         with tab_qof:
-            st.header("Prescribing vs QOF Achievement")
+            st.header("Prescribing vs QOF Clinical Achievement")
             st.caption(
                 "QOF Clinical Achievement Statistics 2022/23 · "
-                "Scatter plots compare practice-level prescribing rates with "
-                "QOF achievement for related clinical domains."
+                "Each QOF indicator measures a specific clinical action or outcome. "
+                "Select an indicator to see how achievement varies with prescribing."
             )
 
-            # Let user pick a QOF domain
-            qof_domains = sorted(QOF_PRESCRIBING_LINKS.keys())
-            selected_qof = st.selectbox(
-                "QOF clinical domain",
-                qof_domains,
-                key="tab_qof_domain",
+            # Build indicator options grouped by domain
+            # Format: "DM008 – Diabetes: last HbA1c ≤64 mmol/mol (preceding 24m)"
+            qof_indicators = qof_df[
+                ~qof_df["QOF_Indicator"].str.contains("Total")
+            ].drop_duplicates("QOF_Indicator").sort_values(
+                ["QOF_Domain", "QOF_Indicator"]
             )
+            indicator_options = []
+            indicator_to_code = {}
+            for _, r in qof_indicators.iterrows():
+                label = f"{r['QOF_Indicator']} – {r['QOF_Description']}"
+                indicator_options.append(label)
+                indicator_to_code[label] = r["QOF_Indicator"]
 
-            # Get linked therapeutic areas for selected QOF domain
-            linked_areas = QOF_PRESCRIBING_LINKS[selected_qof]
+            # Default to DM008 (a clinically meaningful one)
+            default_idx = 0
+            for i, opt in enumerate(indicator_options):
+                if opt.startswith("DM008"):
+                    default_idx = i
+                    break
 
-            # Filter QOF data for selected domain
-            qof_domain_df = qof_df[qof_df["QOF_Domain"] == selected_qof].copy()
+            selected_indicator_label = st.selectbox(
+                "QOF indicator",
+                indicator_options,
+                index=default_idx,
+                key="tab_qof_indicator",
+            )
+            selected_code = indicator_to_code[selected_indicator_label]
 
-            # Show domain summary
-            n_practices = qof_domain_df["QOF_Achievement"].notna().sum()
-            mean_ach = qof_domain_df["QOF_Achievement"].mean()
-            median_ach = qof_domain_df["QOF_Achievement"].median()
-            min_ach = qof_domain_df["QOF_Achievement"].min()
-            mean_reg = qof_domain_df["QOF_Register"].mean()
+            # Filter QOF data for this indicator
+            qof_ind_df = qof_df[qof_df["QOF_Indicator"] == selected_code].copy()
+            qof_ind_df = qof_ind_df[qof_ind_df["QOF_Achievement"].notna()]
+
+            # Summary metrics
+            n_practices = len(qof_ind_df)
+            mean_ach = qof_ind_df["QOF_Achievement"].mean()
+            median_ach = qof_ind_df["QOF_Achievement"].median()
+            min_ach = qof_ind_df["QOF_Achievement"].min()
+            mean_reg = qof_ind_df["QOF_Register"].mean()
             col_s1, col_s2, col_s3, col_s4 = st.columns(4)
             col_s1.metric("Practices with data", f"{n_practices}")
             col_s2.metric("Mean achievement", f"{mean_ach:.1%}")
@@ -1238,42 +1253,52 @@ def main():
 
             if mean_reg and not pd.isna(mean_reg):
                 st.caption(
-                    f"Mean QOF register size (first indicator denominator): "
+                    f"Mean register size (denominator): "
                     f"{mean_reg:.0f} patients per practice"
                 )
 
-            # Colour-by option
-            qof_colour_by = st.radio(
-                "Colour practices by",
-                ["Deprivation quintile", "LCG"],
-                horizontal=True,
-                key="tab_qof_colour_by",
-            )
-
-            # Create scatter plots for each linked therapeutic area
-            for ta_name, description in linked_areas:
-                st.subheader(description)
-
-                # Get per-capita prescribing for this therapeutic area
-                ta_pc = per_cap_by_name(merged, ta_name)
-
-                # Merge prescribing with QOF
-                scatter_df = ta_pc.merge(
-                    qof_domain_df[["Practice", "QOF_Achievement", "QOF_Register"]],
-                    on="Practice",
-                    how="inner",
+            # Controls row: therapeutic area + colour-by
+            ctrl1, ctrl2 = st.columns(2)
+            with ctrl1:
+                # Suggest a therapeutic area based on the indicator
+                suggested_ta = QOF_SUGGESTED_TA.get(selected_code, "All prescribing")
+                ta_names = list(THERAPEUTIC_AREAS.keys())
+                suggested_idx = ta_names.index(suggested_ta) if suggested_ta in ta_names else 0
+                qof_ta_name = st.selectbox(
+                    "Compare with prescribing area",
+                    ta_names,
+                    index=suggested_idx,
+                    key="tab_qof_ta",
                 )
-                scatter_df = scatter_df[scatter_df["QOF_Achievement"].notna()].copy()
-                # Convert achievement to percentage
-                scatter_df["QOF_Pct"] = scatter_df["QOF_Achievement"] * 100
+            with ctrl2:
+                qof_colour_by = st.radio(
+                    "Colour practices by",
+                    ["Deprivation quintile", "LCG"],
+                    horizontal=True,
+                    key="tab_qof_colour_by",
+                )
 
-                if len(scatter_df) < 5:
-                    st.warning(f"Too few practices with both prescribing and QOF data ({len(scatter_df)}).")
-                    continue
+            # Get per-capita prescribing for selected therapeutic area
+            ta_pc = per_cap_by_name(merged, qof_ta_name)
 
+            # Merge prescribing with QOF indicator
+            scatter_df = ta_pc.merge(
+                qof_ind_df[["Practice", "QOF_Achievement", "QOF_Register"]],
+                on="Practice",
+                how="inner",
+            )
+            scatter_df = scatter_df[scatter_df["QOF_Achievement"].notna()].copy()
+            scatter_df["QOF_Pct"] = scatter_df["QOF_Achievement"] * 100
+
+            if len(scatter_df) < 5:
+                st.warning(
+                    f"Too few practices with both prescribing and QOF data "
+                    f"({len(scatter_df)})."
+                )
+            else:
+                # ── Scatter: prescribing vs QOF achievement ────────────
                 fig, ax = plt.subplots(figsize=(10, 6))
 
-                # Scatter coloured by chosen grouping
                 if qof_colour_by == "LCG":
                     for lcg_name in sorted(scatter_df["LCG"].dropna().unique()):
                         lcg_d = scatter_df[scatter_df["LCG"] == lcg_name]
@@ -1294,7 +1319,9 @@ def main():
 
                 # Highlight practices from sidebar
                 for pno in highlight_pracnos[:5]:
-                    row = scatter_df[scatter_df["Practice"].str.strip() == str(pno).strip()]
+                    row = scatter_df[
+                        scatter_df["Practice"].str.strip() == str(pno).strip()
+                    ]
                     if not row.empty:
                         r = row.iloc[0]
                         display = pracno_to_label.get(str(pno).strip(), pno)
@@ -1319,13 +1346,21 @@ def main():
                     mask = np.isfinite(x_vals) & np.isfinite(y_vals)
                     if mask.sum() >= 10:
                         b, m_coef = polyfit(x_vals[mask], y_vals[mask], 1)
-                        x_line = np.linspace(x_vals[mask].min(), x_vals[mask].max(), 100)
-                        ax.plot(x_line, b + m_coef * x_line,
-                                color="#333", linewidth=1.5, linestyle="--")
+                        x_line = np.linspace(
+                            x_vals[mask].min(), x_vals[mask].max(), 100
+                        )
+                        ax.plot(
+                            x_line, b + m_coef * x_line,
+                            color="#333", linewidth=1.5, linestyle="--",
+                        )
 
-                ax.set_xlabel(f"{selected_qof} QOF achievement (%)")
+                # Short indicator description for axis label
+                short_desc = selected_indicator_label.split(" – ", 1)[-1]
+                ax.set_xlabel(f"{selected_code} achievement (%)\n{short_desc}")
                 ax.set_ylabel(label_metric)
-                ax.set_title(f"{ta_name} prescribing vs {selected_qof} QOF achievement")
+                ax.set_title(
+                    f"{qof_ta_name} prescribing vs {selected_code} achievement"
+                )
                 ax.legend(fontsize=8, loc="best")
                 fig.tight_layout()
                 st.pyplot(fig)
@@ -1336,19 +1371,17 @@ def main():
                 valid = scatter_df[["QOF_Pct", metric]].dropna()
                 if len(valid) >= 10:
                     tau, p_val = kendalltau(valid["QOF_Pct"], valid[metric])
-                    sig = "✓" if p_val < 0.05 else "✗"
+                    sig = "significant" if p_val < 0.05 else "not significant"
                     st.caption(
-                        f"Kendall's τ = {tau:.3f} (p = {p_val:.4f}) {sig} — "
-                        f"{'Significant' if p_val < 0.05 else 'Not significant'} "
-                        f"at 5% level · {len(valid)} practices"
+                        f"Kendall's τ = {tau:.3f} (p = {p_val:.4f}) — "
+                        f"{sig} at 5% level · {len(valid)} practices"
                     )
 
-            # Summary: QOF achievement by deprivation quintile
+            # ── Achievement by deprivation quintile ────────────────────
             st.divider()
-            st.subheader(f"{selected_qof} QOF achievement by deprivation quintile")
+            st.subheader(f"{selected_code} achievement by deprivation quintile")
 
-            # Merge QOF with practice deprivation data
-            qof_with_dep = qof_domain_df.merge(
+            qof_with_dep = qof_ind_df.merge(
                 pc[["Practice", "DepQuintile", "LCG"]].drop_duplicates("Practice"),
                 on="Practice",
                 how="inner",
@@ -1365,19 +1398,23 @@ def main():
                 ]
                 bp = ax_box.boxplot(
                     box_data,
-                    labels=[QUINTILE_LABELS.get(int(q), f"Q{int(q)}") for q in quintiles],
+                    labels=[
+                        QUINTILE_LABELS.get(int(q), f"Q{int(q)}")
+                        for q in quintiles
+                    ],
                     patch_artist=True,
                 )
                 for patch, q in zip(bp["boxes"], quintiles):
                     patch.set_facecolor(DEP_COLOURS.get(int(q), "#ccc"))
                     patch.set_alpha(0.7)
-                ax_box.set_ylabel(f"{selected_qof} QOF achievement (%)")
-                ax_box.set_title(f"{selected_qof} QOF achievement by deprivation quintile")
+                ax_box.set_ylabel(f"{selected_code} achievement (%)")
+                ax_box.set_title(
+                    f"{selected_code} achievement by deprivation quintile"
+                )
                 fig_box.tight_layout()
                 st.pyplot(fig_box)
                 plt.close(fig_box)
 
-                # Show means table
                 dep_summary = qof_with_dep.groupby("DepQuintile").agg(
                     Practices=("Practice", "nunique"),
                     Mean_Achievement=("QOF_Pct", "mean"),
@@ -1387,8 +1424,10 @@ def main():
                 dep_summary["DepQuintile"] = dep_summary["DepQuintile"].map(
                     lambda q: QUINTILE_LABELS_FLAT.get(int(q), f"Q{int(q)}")
                 )
-                dep_summary.columns = ["Deprivation quintile", "Practices",
-                                       "Mean (%)", "Median (%)", "Min (%)"]
+                dep_summary.columns = [
+                    "Deprivation quintile", "Practices",
+                    "Mean (%)", "Median (%)", "Min (%)",
+                ]
                 st.dataframe(
                     dep_summary.style.format({
                         "Mean (%)": "{:.1f}",
