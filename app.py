@@ -1239,23 +1239,8 @@ def main():
                 qof_ind_df = qof_df[qof_df["QOF_Indicator"] == selected_code].copy()
                 qof_ind_df = qof_ind_df[qof_ind_df["QOF_Achievement"].notna()]
 
-                # Summary metrics
-                n_practices = len(qof_ind_df)
-                mean_ach = qof_ind_df["QOF_Achievement"].mean()
-                median_ach = qof_ind_df["QOF_Achievement"].median()
-                min_ach = qof_ind_df["QOF_Achievement"].min()
-                mean_reg = qof_ind_df["QOF_Register"].mean()
-                col_s1, col_s2, col_s3, col_s4 = st.columns(4)
-                col_s1.metric("Practices with data", f"{n_practices}")
-                col_s2.metric("Mean achievement", f"{mean_ach:.1%}")
-                col_s3.metric("Median achievement", f"{median_ach:.1%}")
-                col_s4.metric("Min achievement", f"{min_ach:.1%}")
-
-                if mean_reg and not pd.isna(mean_reg):
-                    st.caption(
-                        f"Mean register size (denominator): "
-                        f"{mean_reg:.0f} patients per practice"
-                    )
+                # Placeholder for summary metrics (shown after LCG filter)
+                _qof_metrics_slot = st.empty()
 
                 # Merge prescribing with QOF
                 scatter_df = ta_pc.merge(
@@ -1301,16 +1286,8 @@ def main():
                 domain_prev = prev_df[prev_df["QOF_Domain"] == selected_domain].copy()
                 domain_prev["Prevalence_Pct"] = domain_prev["Prevalence"] * 100
 
-                # Summary metrics
-                n_practices = len(domain_prev)
-                mean_prev = domain_prev["Prevalence_Pct"].mean()
-                median_prev = domain_prev["Prevalence_Pct"].median()
-                max_prev = domain_prev["Prevalence_Pct"].max()
-                col_s1, col_s2, col_s3, col_s4 = st.columns(4)
-                col_s1.metric("Practices with data", f"{n_practices}")
-                col_s2.metric("Mean prevalence", f"{mean_prev:.1f}%")
-                col_s3.metric("Median prevalence", f"{median_prev:.1f}%")
-                col_s4.metric("Max prevalence", f"{max_prev:.1f}%")
+                # Placeholder for summary metrics (shown after LCG filter)
+                _prev_metrics_slot = st.empty()
 
                 st.caption(
                     f"Based on {selected_domain} QOF register indicator: "
@@ -1341,6 +1318,35 @@ def main():
             # ── Apply LCG filter ────────────────────────────────────────
             if len(scatter_df) > 0 and qof_lcg_filter != "All":
                 scatter_df = scatter_df[scatter_df["LCG"] == qof_lcg_filter].copy()
+
+            # ── Fill in summary metrics (now that LCG filter is applied) ─
+            if len(scatter_df) > 0:
+                _lcg_note = f" ({qof_lcg_filter})" if qof_lcg_filter != "All" else ""
+                if qof_view == "QOF achievement" and qof_df is not None:
+                    with _qof_metrics_slot.container():
+                        n_p = len(scatter_df)
+                        m_ach = scatter_df["X_val"].mean()
+                        med_ach = scatter_df["X_val"].median()
+                        min_ach = scatter_df["X_val"].min()
+                        m_reg = scatter_df["QOF_Register"].mean() if "QOF_Register" in scatter_df.columns else None
+                        c1, c2, c3, c4 = st.columns(4)
+                        c1.metric("Practices" + _lcg_note, f"{n_p}")
+                        c2.metric("Mean achievement", f"{m_ach:.1f}%")
+                        c3.metric("Median achievement", f"{med_ach:.1f}%")
+                        c4.metric("Min achievement", f"{min_ach:.1f}%")
+                        if m_reg and not pd.isna(m_reg):
+                            st.caption(f"Mean register size: {m_reg:.0f} patients per practice")
+                elif qof_view == "Disease prevalence" and prev_df is not None:
+                    with _prev_metrics_slot.container():
+                        n_p = len(scatter_df)
+                        m_prev = scatter_df["X_val"].mean()
+                        med_prev = scatter_df["X_val"].median()
+                        mx_prev = scatter_df["X_val"].max()
+                        c1, c2, c3, c4 = st.columns(4)
+                        c1.metric("Practices" + _lcg_note, f"{n_p}")
+                        c2.metric("Mean prevalence", f"{m_prev:.1f}%")
+                        c3.metric("Median prevalence", f"{med_prev:.1f}%")
+                        c4.metric("Max prevalence", f"{mx_prev:.1f}%")
 
             # ── Common scatter + stats section ─────────────────────────
             if len(scatter_df) > 0 and len(scatter_df) < 5:
