@@ -828,7 +828,108 @@ def main():
                 sig = "***" if p_val < 0.0005 else ("**" if p_val < 0.01 else ("*" if p_val < 0.05 else "ns"))
                 st.caption(f"Kendall's τ = {tau:.3f} (p = {p_val:.4f}) {sig} · Negative τ = higher prescribing in more deprived areas")
 
+            # ── Individual drug scatter ─────────────────────────────────
+            st.divider()
+            st.subheader("Individual drug scatter")
+            st.caption("Select a specific drug to see its prescribing rate vs deprivation across practices.")
+
+            # Get all unique drug names from the dataset
+            all_drugs = sorted(merged["VTM_NM"].dropna().unique().tolist())
+
+            # Trust/LCG filter for the drug scatter
+            drug_geo_options = ["All Northern Ireland"] + sorted(pc["Trust"].dropna().unique().tolist()) + sorted(pc["LCG"].dropna().unique().tolist())
+            drug_geo = st.selectbox(
+                "Filter by Trust or LCG",
+                drug_geo_options,
+                key="drug_scatter_geo",
+            )
+
+            selected_drug = st.selectbox(
+                "Select a drug (VTM name)",
+                all_drugs,
+                index=None,
+                placeholder="Start typing to search for a drug…",
+                key="drug_scatter_select",
+            )
+
+            if selected_drug:
+                # Filter to selected drug
+                drug_filter = lambda df, drug=selected_drug: df[df["VTM_NM"].str.strip().str.lower() == drug.strip().lower()]
+                drug_pc = per_cap(merged, drug_filter)
+
+                # Apply geographic filter
+                if drug_geo != "All Northern Ireland":
+                    if drug_geo in pc["Trust"].values:
+                        drug_pc = drug_pc[drug_pc["Trust"] == drug_geo]
+                    elif drug_geo in pc["LCG"].values:
+                        drug_pc = drug_pc[drug_pc["LCG"] == drug_geo]
+
+                if len(drug_pc) < 5:
+                    st.info(f"Too few practices ({len(drug_pc)}) prescribing **{selected_drug}** in {drug_geo} to show a meaningful scatter.")
+                elif "Ward_Dep_Rank" not in drug_pc.columns or drug_pc["Ward_Dep_Rank"].isna().all():
+                    st.warning("Deprivation data not available for these practices.")
+                else:
+                    drug_scatter = drug_pc.dropna(subset=["Ward_Dep_Rank", metric])
+
+                    fig_drug, ax_drug = plt.subplots(figsize=(10, 5))
+                    dep_colours = {1: "#d32f2f", 2: "#f57c00", 3: "#fbc02d", 4: "#66bb6a", 5: "#1e88e5"}
+                    q_labels = {1: "Q1 Most deprived", 2: "Q2", 3: "Q3", 4: "Q4", 5: "Q5 Least deprived"}
+                    for q in sorted(drug_scatter["DepQuintile"].dropna().unique()):
+                        qd = drug_scatter[drug_scatter["DepQuintile"] == q]
+                        ax_drug.scatter(
+                            qd["Ward_Dep_Rank"], qd[metric],
+                            color=dep_colours.get(int(q), "#999"), alpha=0.6, s=35,
+                            label=q_labels.get(int(q), f"Q{int(q)}"),
+                        )
+
+                    # Trend line
+                    if len(drug_scatter) >= 10:
+                        from numpy.polynomial.polynomial import polyfit
+                        x = drug_scatter["Ward_Dep_Rank"].values
+                        y = drug_scatter[metric].values
+                        b, m_coef = polyfit(x, y, 1)
+                        x_line = np.linspace(x.min(), x.max(), 100)
+                        ax_drug.plot(x_line, b + m_coef * x_line, color="#333", linewidth=1.5, linestyle="--")
+
+                    drug_label = "Items per patient" if metric == "ItemsPerCapita" else "Cost (£) per patient"
+                    geo_suffix = f" – {drug_geo}" if drug_geo != "All Northern Ireland" else ""
+                    ax_drug.set_xlabel("Ward deprivation rank (1 = most deprived)")
+                    ax_drug.set_ylabel(drug_label)
+                    ax_drug.set_title(f"{selected_drug} – prescribing vs deprivation{geo_suffix}")
+                    ax_drug.legend(fontsize=8)
+                    fig_drug.tight_layout()
+                    st.pyplot(fig_drug)
+                    plt.close(fig_drug)
+
+                    # Stats
+                    if len(drug_scatter) >= 10:
+                        from scipy import stats as drug_stats
+                        tau_d, p_d = drug_stats.kendalltau(drug_scatter["Ward_Dep_Rank"], drug_scatter[metric])
+                        sig_d = "***" if p_d < 0.0005 else ("**" if p_d < 0.01 else ("*" if p_d < 0.05 else "ns"))
+                        st.caption(
+                            f"Kendall's τ = {tau_d:.3f} (p = {p_d:.4f}) {sig_d} · "
+                            f"{len(drug_scatter)} practices · "
+                            f"Negative τ = higher prescribing in more deprived areas"
+                        )
+
+                    # Quick quintile summary for this drug
+                    if "DepQuintile" in drug_scatter.columns:
+                        drug_dep = drug_scatter.groupby("DepQuintile").agg(
+                            Practices=("Practice", "nunique"),
+                            MeanRate=(metric, "mean"),
+                        ).reset_index()
+                        drug_dep["Quintile"] = drug_dep["DepQuintile"].astype(int).map(
+                            {1: "Q1 (most deprived)", 2: "Q2", 3: "Q3", 4: "Q4", 5: "Q5 (least deprived)"}
+                        )
+                        st.dataframe(
+                            drug_dep[["Quintile", "Practices", "MeanRate"]].rename(
+                                columns={"MeanRate": f"Mean {drug_label}"}
+                            ).style.format({f"Mean {drug_label}": "{:.4f}"}),
+                            use_container_width=True,
+                        )
+
             # ── Correlation summary across all therapeutic areas (always NI-wide) ──
+            st.divider()
             st.subheader("Deprivation correlations across all therapeutic areas (all NI)")
             st.caption(
                 "Kendall's τ for each therapeutic area. Negative values mean higher "
