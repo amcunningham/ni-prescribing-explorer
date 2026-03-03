@@ -1,7 +1,10 @@
-# Data files (downloaded on first run from OpenDataNI)
-data/
+# Cache files (generated at runtime)
 .cache/
 *.pkl
+
+# Raw CSV data (large files – parquet files in data/ ARE tracked)
+data/prescribing/*.csv
+data/practice_list_sizes/*.csv
 
 # Python
 __pycache__/

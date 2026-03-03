@@ -30,6 +30,8 @@ APP_DIR = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = os.path.join(APP_DIR, "data")
 CACHE_FILE = os.path.join(APP_DIR, ".cache", "merged.pkl")
 CACHE_PRACTICES = os.path.join(APP_DIR, ".cache", "practices.pkl")
+PARQUET_PRESCRIBING = os.path.join(DATA_DIR, "prescribing.parquet")
+PARQUET_PRACTICES = os.path.join(DATA_DIR, "practices.parquet")
 
 # ── OpenDataNI CKAN API ────────────────────────────────────────────────
 CKAN_API = "https://admin.opendatani.gov.uk/api/3/action"
@@ -305,13 +307,14 @@ def load_local_data():
     return merged, practice_df
 
 
-@st.cache_data(show_spinner=False)
+@st.cache_data(show_spinner="Loading data…")
 def load_data():
     """
     Load data with this priority:
     1. Pickle cache (.cache/ directory)
-    2. Local CSV files (data/ directory)
-    3. Download from OpenDataNI
+    2. Bundled parquet files (data/ directory)
+    3. Local CSV files (data/ directory)
+    4. Download from OpenDataNI
     """
     # 1. Try pickle cache
     if os.path.exists(CACHE_FILE) and os.path.exists(CACHE_PRACTICES):
@@ -319,16 +322,26 @@ def load_data():
         practices = pd.read_pickle(CACHE_PRACTICES)
         return merged, practices
 
-    # 2. Try local CSVs
-    merged, practices = load_local_data()
-    if merged is not None:
-        # Save cache for next time
+    # 2. Try bundled parquet files
+    if os.path.exists(PARQUET_PRESCRIBING) and os.path.exists(PARQUET_PRACTICES):
+        practices = pd.read_parquet(PARQUET_PRACTICES)
+        prescribing = pd.read_parquet(PARQUET_PRESCRIBING)
+        merged = prescribing  # Already merged when parquet was created
+        # Cache as pickle for faster subsequent loads
         os.makedirs(os.path.dirname(CACHE_FILE), exist_ok=True)
         merged.to_pickle(CACHE_FILE)
         practices.to_pickle(CACHE_PRACTICES)
         return merged, practices
 
-    # 3. Download from OpenDataNI
+    # 3. Try local CSVs
+    merged, practices = load_local_data()
+    if merged is not None:
+        os.makedirs(os.path.dirname(CACHE_FILE), exist_ok=True)
+        merged.to_pickle(CACHE_FILE)
+        practices.to_pickle(CACHE_PRACTICES)
+        return merged, practices
+
+    # 4. Download from OpenDataNI
     return None, None  # Signal that download is needed
 
 
@@ -456,11 +469,12 @@ def main():
     merged, practices = load_data()
 
     if merged is None:
-        st.info("No local data found. Downloading the latest 3 months from OpenDataNI…")
+        st.info("Bundled data not found. Downloading the latest 3 months from OpenDataNI — this may take 1–3 minutes…")
         progress = st.progress(0, "Starting download…")
         try:
-            merged, practices = download_data_from_opendatani(latest_n=3, progress_bar=progress)
-            # Cache for next time
+            merged, practices = download_data_from_opendatani(
+                latest_n=3, progress_bar=progress
+            )
             os.makedirs(os.path.dirname(CACHE_FILE), exist_ok=True)
             merged.to_pickle(CACHE_FILE)
             practices.to_pickle(CACHE_PRACTICES)
@@ -470,8 +484,6 @@ def main():
         except Exception as e:
             progress.empty()
             st.error(f"Failed to download data: {e}")
-            st.info("You can also place CSV files manually in the `data/` folder. "
-                    "See the README for details.")
             return
 
     # Show data period
@@ -545,10 +557,17 @@ def main():
 
     view_level = st.sidebar.radio("View level", ["NI overview", "By Trust / LCG", "Practice deep-dive"])
 
-    # Refresh data button
+    # Data management
     st.sidebar.divider()
-    if st.sidebar.button("🔄 Refresh data from OpenDataNI"):
-        # Clear cache and re-download
+    st.sidebar.caption("Data management")
+    dm_col1, dm_col2 = st.sidebar.columns(2)
+    if dm_col1.button("🔄 Refresh from OpenDataNI"):
+        for f in [CACHE_FILE, CACHE_PRACTICES]:
+            if os.path.exists(f):
+                os.remove(f)
+        st.cache_data.clear()
+        st.rerun()
+    if dm_col2.button("📁 Load different files"):
         for f in [CACHE_FILE, CACHE_PRACTICES]:
             if os.path.exists(f):
                 os.remove(f)
@@ -667,6 +686,17 @@ def main():
                 c3.metric("Registered patients", f"{int(prac_row.get('RegisteredPatients', 0)):,}")
             else:
                 st.warning("Practice details not found in practice list.")
+
+            # Caterpillar chart for the selected therapeutic area, highlighting this practice
+            st.subheader(f"{area_name} – where this practice sits")
+            highlight_this = [(selected_practice, "#e53935")]
+            fig_cat = caterpillar_chart(
+                pc, highlight_this,
+                title=f"{area_name} – all practices (selected practice in red)",
+                metric=metric,
+            )
+            st.pyplot(fig_cat)
+            plt.close(fig_cat)
 
             st.subheader("Performance across therapeutic areas")
 
