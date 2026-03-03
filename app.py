@@ -914,15 +914,6 @@ def main():
                                              placeholder="Start typing to search…",
                                              key="tab_dep_drug_select")
 
-            # Practice highlight for drug scatter
-            highlight_drug_label = st.selectbox(
-                "Highlight a practice on the chart (optional)",
-                ["None"] + sorted(all_labels),
-                index=0,
-                key="tab_dep_drug_highlight",
-            )
-            highlight_drug_pracno = label_to_pracno.get(highlight_drug_label) if highlight_drug_label != "None" else None
-
             if selected_drug:
                 drug_filter = lambda df, drug=selected_drug: df[
                     df["VTM_NM"].str.strip().str.lower() == drug.strip().lower()
@@ -947,10 +938,9 @@ def main():
                     _scatter_by_colour(ax_drug, drug_scatter, metric, colour_by)
                     _scatter_trend_line(ax_drug, drug_scatter, metric)
 
-                    # Highlight selected practice
-                    if highlight_drug_pracno:
-                        _scatter_highlight_practice(ax_drug, drug_scatter, metric,
-                                                    highlight_drug_pracno, pracno_to_label)
+                    # Highlight practices from sidebar selection
+                    for pno in highlight_pracnos[:5]:
+                        _scatter_highlight_practice(ax_drug, drug_scatter, metric, pno, pracno_to_label)
 
                     geo_suffix = f" – {drug_geo}" if drug_geo != "All Northern Ireland" else ""
                     ax_drug.set_xlabel("Ward deprivation rank (1 = most deprived)")
