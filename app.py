@@ -407,6 +407,14 @@ def per_cap(merged, area_filter):
     return agg.sort_values("ItemsPerCapita", ascending=False)
 
 
+@st.cache_data(show_spinner=False)
+def per_cap_by_name(_merged, area_name):
+    """Cached per-capita computation keyed by therapeutic area name.
+    Avoids recomputing on every tab render."""
+    ta = THERAPEUTIC_AREAS[area_name]
+    return per_cap(_merged, ta["filter"])
+
+
 # ════════════════════════════════════════════════════════════════════════
 # CHARTS
 # ════════════════════════════════════════════════════════════════════════
@@ -979,71 +987,71 @@ def main():
 
             # ── Correlation summary (always NI-wide) ────────────────────
             st.divider()
-            st.subheader("Deprivation correlations across all therapeutic areas (all NI)")
-            st.caption(
-                "Kendall's τ for each therapeutic area. Negative values mean higher "
-                "prescribing in more deprived areas. *** p < 0.0005 (Bonferroni-corrected)."
-            )
-
-            from scipy import stats as sp_stats
-            corr_rows = []
-            for ta_name, ta in THERAPEUTIC_AREAS.items():
-                ta_pc = per_cap(merged, ta["filter"])
-                if "Ward_Dep_Rank" not in ta_pc.columns:
-                    continue
-                ta_data = ta_pc.dropna(subset=["Ward_Dep_Rank", metric])
-                if len(ta_data) < 10:
-                    continue
-                tau_val, p_val = sp_stats.kendalltau(ta_data["Ward_Dep_Rank"], ta_data[metric])
-                q1 = ta_data[ta_data["DepQuintile"] == 1][metric].mean() if "DepQuintile" in ta_data.columns else None
-                q5 = ta_data[ta_data["DepQuintile"] == 5][metric].mean() if "DepQuintile" in ta_data.columns else None
-                ratio = q1 / q5 if q5 and q5 > 0 else None
-                corr_rows.append({
-                    "Therapeutic area": ta_name,
-                    "Kendall's τ": tau_val,
-                    "p-value": p_val,
-                    "Sig": "***" if p_val < 0.0005 else ("**" if p_val < 0.01 else ("*" if p_val < 0.05 else "")),
-                    "Q1 mean": q1,
-                    "Q5 mean": q5,
-                    "Q1:Q5 ratio": ratio,
-                    "Practices": len(ta_data),
-                })
-
-            if corr_rows:
-                corr_df = pd.DataFrame(corr_rows).sort_values("Kendall's τ")
-
-                fig_corr, ax_corr = plt.subplots(figsize=(10, 6))
-                colours_corr = ["#e53935" if p < 0.0005 else "#bdbdbd" for p in corr_df["p-value"]]
-                ax_corr.barh(
-                    corr_df["Therapeutic area"],
-                    corr_df["Kendall's τ"],
-                    color=colours_corr,
-                    edgecolor="white",
-                    height=0.6,
+            with st.expander("Deprivation correlations across all therapeutic areas (all NI)", expanded=False):
+                st.caption(
+                    "Kendall's τ for each therapeutic area. Negative values mean higher "
+                    "prescribing in more deprived areas. *** p < 0.0005 (Bonferroni-corrected)."
                 )
-                ax_corr.axvline(0, color="#333", linewidth=0.8)
-                ax_corr.set_xlabel("Kendall's τ (negative = higher prescribing in more deprived areas)")
-                ax_corr.set_title("Prescribing and deprivation: correlations by therapeutic area")
-                fig_corr.tight_layout()
-                st.pyplot(fig_corr)
-                plt.close(fig_corr)
-                st.caption("Red bars = statistically significant (p < 0.0005, Bonferroni-corrected)")
 
-                display_corr = corr_df[["Therapeutic area", "Kendall's τ", "p-value", "Sig",
-                                         "Q1 mean", "Q5 mean", "Q1:Q5 ratio", "Practices"]].copy()
-                st.dataframe(
-                    display_corr.style.format({
-                        "Kendall's τ": "{:.3f}",
-                        "p-value": "{:.4f}",
-                        "Q1 mean": "{:.3f}",
-                        "Q5 mean": "{:.3f}",
-                        "Q1:Q5 ratio": "{:.2f}",
-                    }).map(
-                        lambda v: "color: #e53935; font-weight: bold" if v == "***" else "",
-                        subset=["Sig"],
-                    ),
-                    use_container_width=True,
-                )
+                from scipy import stats as sp_stats
+                corr_rows = []
+                for ta_name in THERAPEUTIC_AREAS:
+                    ta_pc = per_cap_by_name(merged, ta_name)
+                    if "Ward_Dep_Rank" not in ta_pc.columns:
+                        continue
+                    ta_data = ta_pc.dropna(subset=["Ward_Dep_Rank", metric])
+                    if len(ta_data) < 10:
+                        continue
+                    tau_val, p_val = sp_stats.kendalltau(ta_data["Ward_Dep_Rank"], ta_data[metric])
+                    q1 = ta_data[ta_data["DepQuintile"] == 1][metric].mean() if "DepQuintile" in ta_data.columns else None
+                    q5 = ta_data[ta_data["DepQuintile"] == 5][metric].mean() if "DepQuintile" in ta_data.columns else None
+                    ratio = q1 / q5 if q5 and q5 > 0 else None
+                    corr_rows.append({
+                        "Therapeutic area": ta_name,
+                        "Kendall's τ": tau_val,
+                        "p-value": p_val,
+                        "Sig": "***" if p_val < 0.0005 else ("**" if p_val < 0.01 else ("*" if p_val < 0.05 else "")),
+                        "Q1 mean": q1,
+                        "Q5 mean": q5,
+                        "Q1:Q5 ratio": ratio,
+                        "Practices": len(ta_data),
+                    })
+
+                if corr_rows:
+                    corr_df = pd.DataFrame(corr_rows).sort_values("Kendall's τ")
+
+                    fig_corr, ax_corr = plt.subplots(figsize=(10, 6))
+                    colours_corr = ["#e53935" if p < 0.0005 else "#bdbdbd" for p in corr_df["p-value"]]
+                    ax_corr.barh(
+                        corr_df["Therapeutic area"],
+                        corr_df["Kendall's τ"],
+                        color=colours_corr,
+                        edgecolor="white",
+                        height=0.6,
+                    )
+                    ax_corr.axvline(0, color="#333", linewidth=0.8)
+                    ax_corr.set_xlabel("Kendall's τ (negative = higher prescribing in more deprived areas)")
+                    ax_corr.set_title("Prescribing and deprivation: correlations by therapeutic area")
+                    fig_corr.tight_layout()
+                    st.pyplot(fig_corr)
+                    plt.close(fig_corr)
+                    st.caption("Red bars = statistically significant (p < 0.0005, Bonferroni-corrected)")
+
+                    display_corr = corr_df[["Therapeutic area", "Kendall's τ", "p-value", "Sig",
+                                             "Q1 mean", "Q5 mean", "Q1:Q5 ratio", "Practices"]].copy()
+                    st.dataframe(
+                        display_corr.style.format({
+                            "Kendall's τ": "{:.3f}",
+                            "p-value": "{:.4f}",
+                            "Q1 mean": "{:.3f}",
+                            "Q5 mean": "{:.3f}",
+                            "Q1:Q5 ratio": "{:.2f}",
+                        }).map(
+                            lambda v: "color: #e53935; font-weight: bold" if v == "***" else "",
+                            subset=["Sig"],
+                        ),
+                        use_container_width=True,
+                    )
 
     # ── TAB 4: Practice deep-dive ───────────────────────────────────────
     with tab_prac:
@@ -1081,58 +1089,57 @@ def main():
             st.pyplot(fig_cat)
             plt.close(fig_cat)
 
-            st.subheader("Performance across therapeutic areas")
+            with st.expander("Performance across all therapeutic areas", expanded=True):
+                prac_display = selected_label.split("(")[0].strip() if selected_label else selected_pracno
 
-            prac_display = selected_label.split("(")[0].strip() if selected_label else selected_pracno
+                rows = []
+                for ta_name in THERAPEUTIC_AREAS:
+                    ta_pc = per_cap_by_name(merged, ta_name)
+                    ta_mean = ta_pc[metric].mean()
+                    prac = ta_pc[ta_pc["Practice"].str.strip() == str(selected_pracno).strip()]
+                    if not prac.empty:
+                        val = prac.iloc[0][metric]
+                        pct = ((val - ta_mean) / ta_mean) * 100
+                        rank = int((ta_pc[metric] <= val).sum())
+                        rows.append({
+                            "Therapeutic area": ta_name,
+                            metric: val,
+                            "NI mean": ta_mean,
+                            "vs NI mean": pct,
+                            "Rank": f"{rank}/{len(ta_pc)}",
+                        })
 
-            rows = []
-            for ta_name, ta in THERAPEUTIC_AREAS.items():
-                ta_pc = per_cap(merged, ta["filter"])
-                ta_mean = ta_pc[metric].mean()
-                prac = ta_pc[ta_pc["Practice"].str.strip() == str(selected_pracno).strip()]
-                if not prac.empty:
-                    val = prac.iloc[0][metric]
-                    pct = ((val - ta_mean) / ta_mean) * 100
-                    rank = int((ta_pc[metric] <= val).sum())
-                    rows.append({
-                        "Therapeutic area": ta_name,
-                        metric: val,
-                        "NI mean": ta_mean,
-                        "vs NI mean": pct,
-                        "Rank": f"{rank}/{len(ta_pc)}",
-                    })
+                if rows:
+                    results = pd.DataFrame(rows)
 
-            if rows:
-                results = pd.DataFrame(rows)
+                    fig, ax = plt.subplots(figsize=(10, 5))
+                    x = range(len(results))
+                    w = 0.35
+                    ax.bar([i - w / 2 for i in x], results[metric], w,
+                           label=prac_display, color="#1e88e5")
+                    ax.bar([i + w / 2 for i in x], results["NI mean"], w,
+                           label="NI mean", color="#bdbdbd")
+                    ax.set_xticks(list(x))
+                    ax.set_xticklabels(results["Therapeutic area"], rotation=35, ha="right", fontsize=8)
+                    ax.set_ylabel(label_metric)
+                    ax.set_title(f"{prac_display} vs NI average")
+                    ax.legend()
+                    fig.tight_layout()
+                    st.pyplot(fig)
+                    plt.close(fig)
 
-                fig, ax = plt.subplots(figsize=(10, 5))
-                x = range(len(results))
-                w = 0.35
-                ax.bar([i - w / 2 for i in x], results[metric], w,
-                       label=prac_display, color="#1e88e5")
-                ax.bar([i + w / 2 for i in x], results["NI mean"], w,
-                       label="NI mean", color="#bdbdbd")
-                ax.set_xticks(list(x))
-                ax.set_xticklabels(results["Therapeutic area"], rotation=35, ha="right", fontsize=8)
-                ax.set_ylabel(label_metric)
-                ax.set_title(f"{prac_display} vs NI average")
-                ax.legend()
-                fig.tight_layout()
-                st.pyplot(fig)
-                plt.close(fig)
-
-                st.dataframe(
-                    results.style.format({
-                        metric: "{:.2f}",
-                        "NI mean": "{:.2f}",
-                        "vs NI mean": "{:+.1f}%",
-                    }).map(
-                        lambda v: "color: #e53935" if isinstance(v, (int, float)) and v > 20
-                        else ("color: #43a047" if isinstance(v, (int, float)) and v < -20 else ""),
-                        subset=["vs NI mean"],
-                    ),
-                    use_container_width=True,
-                )
+                    st.dataframe(
+                        results.style.format({
+                            metric: "{:.2f}",
+                            "NI mean": "{:.2f}",
+                            "vs NI mean": "{:+.1f}%",
+                        }).map(
+                            lambda v: "color: #e53935" if isinstance(v, (int, float)) and v > 20
+                            else ("color: #43a047" if isinstance(v, (int, float)) and v < -20 else ""),
+                            subset=["vs NI mean"],
+                        ),
+                        use_container_width=True,
+                    )
 
 
 if __name__ == "__main__":
