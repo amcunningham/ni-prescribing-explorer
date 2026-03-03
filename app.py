@@ -505,12 +505,70 @@ def practice_detail(pc, pracno, ni_mean):
     }
 
 
+# ── Consistent LCG colour palette ─────────────────────────────────────
+LCG_COLOURS = {
+    "Belfast": "#2196F3",
+    "Northern": "#4CAF50",
+    "South Eastern": "#FF9800",
+    "Southern": "#9C27B0",
+    "Western": "#F44336",
+}
+
+DEP_COLOURS = {1: "#d32f2f", 2: "#f57c00", 3: "#fbc02d", 4: "#66bb6a", 5: "#1e88e5"}
+QUINTILE_LABELS = {1: "Q1\nMost deprived", 2: "Q2", 3: "Q3", 4: "Q4", 5: "Q5\nLeast deprived"}
+QUINTILE_LABELS_FLAT = {1: "Q1 (most deprived)", 2: "Q2", 3: "Q3", 4: "Q4", 5: "Q5 (least deprived)"}
+
+
+def _scatter_by_colour(ax, data, metric, colour_by):
+    """Plot scatter points coloured by deprivation quintile or LCG."""
+    if colour_by == "LCG":
+        for lcg_name in sorted(data["LCG"].dropna().unique()):
+            lcg_d = data[data["LCG"] == lcg_name]
+            ax.scatter(lcg_d["Ward_Dep_Rank"], lcg_d[metric],
+                       color=LCG_COLOURS.get(lcg_name, "#999"),
+                       alpha=0.6, s=30, label=lcg_name)
+    else:
+        for q in sorted(data["DepQuintile"].dropna().unique()):
+            qd = data[data["DepQuintile"] == q]
+            ax.scatter(qd["Ward_Dep_Rank"], qd[metric],
+                       color=DEP_COLOURS.get(int(q), "#999"),
+                       alpha=0.6, s=30,
+                       label=QUINTILE_LABELS.get(int(q), f"Q{int(q)}"))
+
+
+def _scatter_highlight_practice(ax, data, metric, pracno, pracno_to_label):
+    """Overlay a highlighted practice on a scatter plot."""
+    row = data[data["Practice"].str.strip() == str(pracno).strip()]
+    if not row.empty:
+        r = row.iloc[0]
+        display = pracno_to_label.get(str(pracno).strip(), pracno)
+        if isinstance(display, str) and "(" in display:
+            display = display.split("(")[0].strip()
+        ax.scatter(r["Ward_Dep_Rank"], r[metric],
+                   color="#000000", s=180, marker="*", zorder=10,
+                   edgecolors="#e53935", linewidths=1.5)
+        ax.annotate(display, (r["Ward_Dep_Rank"], r[metric]),
+                    textcoords="offset points", xytext=(6, 8),
+                    fontsize=7, color="#e53935", fontweight="bold")
+
+
+def _scatter_trend_line(ax, data, metric):
+    """Add a linear trend line to a scatter."""
+    if len(data) >= 10:
+        from numpy.polynomial.polynomial import polyfit
+        x = data["Ward_Dep_Rank"].values
+        y = data[metric].values
+        b, m_coef = polyfit(x, y, 1)
+        x_line = np.linspace(x.min(), x.max(), 100)
+        ax.plot(x_line, b + m_coef * x_line, color="#333", linewidth=1.5, linestyle="--")
+
+
 # ════════════════════════════════════════════════════════════════════════
 # MAIN APP
 # ════════════════════════════════════════════════════════════════════════
 
 def main():
-    st.title("💊 Northern Ireland GP Prescribing Explorer")
+    st.title("Northern Ireland GP Prescribing Explorer")
     st.caption("Data: OpenDataNI GP Prescribing · Open Government Licence · All data relates to GP practices in Northern Ireland")
 
     # ── load or download data ───────────────────────────────────────────
@@ -547,12 +605,12 @@ def main():
             y, mo, n = int(row["Year"]), int(row["Month"]), int(row["Practices"])
             label = f"{cal_mod.month_abbr[mo]} {y}"
             if n < max_prac * 0.8:
-                label += f" ⚠️ incomplete ({n} practices)"
+                label += f" (incomplete – {n} practices)"
             else:
                 used_months.append(label)
             parts.append(label)
 
-        st.caption(f"Data period: **{', '.join(parts)}** · Figures shown as monthly average using {len(used_months)} complete month{'s' if len(used_months) != 1 else ''}")
+        st.caption(f"Data period: **{', '.join(parts)}** · Monthly average using {len(used_months)} complete month{'s' if len(used_months) != 1 else ''}")
 
     # ── sidebar ─────────────────────────────────────────────────────────
     st.sidebar.header("Filters")
@@ -571,7 +629,9 @@ def main():
         format_func=lambda x: "Items per patient" if x == "ItemsPerCapita" else "Cost per patient (£)",
     )
 
-    # Practice lookup helper – build combined labels for easier identification
+    label_metric = "Items per patient" if metric == "ItemsPerCapita" else "Cost (£) per patient"
+
+    # Practice lookup helper
     practices["_label"] = (
         practices["PracticeName"].str.strip()
         + "  (" + practices["Postcode"].str.strip() + ", "
@@ -599,7 +659,7 @@ def main():
         selected_lcg = st.sidebar.selectbox("LCG area", sorted(practices["LCG"].dropna().unique()))
         filtered = practices[practices["LCG"] == selected_lcg]
         all_labels = sorted(filtered["_label"].unique())
-    else:  # Practice number
+    else:
         prac_num = st.sidebar.text_input("Practice number", "")
         if prac_num.strip():
             filtered = practices[practices["PracNo"].str.strip() == prac_num.strip()]
@@ -613,14 +673,11 @@ def main():
         default=[],
         help="Select up to 5 practices to highlight on charts",
     )
-    # Convert labels back to practice numbers for internal use
     highlight_pracnos = [label_to_pracno.get(l, l) for l in highlight_labels]
-
-    view_level = st.sidebar.radio("View level", ["NI overview", "By Trust / LCG", "By deprivation", "Practice deep-dive"])
 
     # Data management
     st.sidebar.divider()
-    if st.sidebar.button("🔄 Refresh data from OpenDataNI"):
+    if st.sidebar.button("Refresh data from OpenDataNI"):
         for f in [CACHE_FILE, CACHE_PRACTICES]:
             if os.path.exists(f):
                 os.remove(f)
@@ -631,20 +688,29 @@ def main():
     pc = per_cap(merged, area["filter"])
     ni_mean = pc[metric].mean()
 
-    # ── NI overview ─────────────────────────────────────────────────────
-    if view_level == "NI overview":
+    # ════════════════════════════════════════════════════════════════════
+    # TABS
+    # ════════════════════════════════════════════════════════════════════
+    tab_ni, tab_area, tab_dep, tab_prac = st.tabs([
+        "Northern Ireland", "Trust / LCG", "Deprivation", "Practice",
+    ])
+
+    # ── TAB 1: Northern Ireland overview ────────────────────────────────
+    with tab_ni:
         st.header(f"{area_name} – Northern Ireland overview")
 
         col1, col2, col3, col4 = st.columns(4)
         col1.metric("Practices", f"{len(pc)}")
-        col2.metric("Total items", f"{int(pc['TotalItems'].sum()):,}")
+        col2.metric("Total items (monthly avg)", f"{int(pc['TotalItems'].sum()):,}")
         col3.metric("NI mean per capita", f"{ni_mean:.2f}")
-        col4.metric("Total cost", f"£{pc['TotalCost'].sum():,.0f}")
+        col4.metric("Total cost (monthly avg)", f"£{pc['TotalCost'].sum():,.0f}")
 
         # Caterpillar
         colours = ["#e53935", "#1e88e5", "#43a047", "#fb8c00", "#8e24aa"]
         highlight = [(n, colours[i % len(colours)]) for i, n in enumerate(highlight_pracnos[:5])]
-        fig = caterpillar_chart(pc, highlight, title=f"{area_name} – items per registered patient", metric=metric)
+        fig = caterpillar_chart(pc, highlight,
+                                title=f"{area_name} – {label_metric.lower()} by practice rank",
+                                metric=metric)
         st.pyplot(fig)
         plt.close(fig)
 
@@ -653,8 +719,7 @@ def main():
         fig2, ax2 = plt.subplots(figsize=(8, 3.5))
         ax2.hist(pc[metric].dropna(), bins=40, color="#42a5f5", edgecolor="white", alpha=0.85)
         ax2.axvline(ni_mean, color="#333", linewidth=1.2, linestyle="--", label=f"Mean: {ni_mean:.2f}")
-        label = "Items per patient" if metric == "ItemsPerCapita" else "Cost (£) per patient"
-        ax2.set_xlabel(label)
+        ax2.set_xlabel(label_metric)
         ax2.set_ylabel("Number of practices")
         ax2.legend()
         fig2.tight_layout()
@@ -675,8 +740,8 @@ def main():
                         st.markdown(f"Items/capita: **{detail['Items per capita']}** ({detail['vs NI mean']} vs NI)")
                         st.markdown(f"Rank: {detail['Rank']}")
 
-    # ── Trust / LCG view ────────────────────────────────────────────────
-    elif view_level == "By Trust / LCG":
+    # ── TAB 2: Trust / LCG ─────────────────────────────────────────────
+    with tab_area:
         st.header(f"{area_name} – by Trust / LCG")
 
         fig = trust_bar_chart(pc, title=f"{area_name} per capita by Trust", metric=metric)
@@ -701,8 +766,9 @@ def main():
         # Trust-level caterpillar
         st.subheader("Practice variation within Trusts")
         selected_trust = st.selectbox("Focus on Trust",
-                                       ["All"] + sorted(pc["Trust"].dropna().unique().tolist()))
-        if selected_trust != "All":
+                                       ["All Northern Ireland"] + sorted(pc["Trust"].dropna().unique().tolist()),
+                                       key="tab_area_trust")
+        if selected_trust != "All Northern Ireland":
             pc_trust = pc[pc["Trust"] == selected_trust]
         else:
             pc_trust = pc
@@ -711,14 +777,14 @@ def main():
         highlight = [(n, colours[i % len(colours)]) for i, n in enumerate(highlight_pracnos[:5])]
         fig2 = caterpillar_chart(
             pc_trust, highlight,
-            title=f"{area_name} – {selected_trust if selected_trust != 'All' else 'NI'} practices",
+            title=f"{area_name} – {selected_trust if selected_trust != 'All Northern Ireland' else 'NI'} practices",
             metric=metric,
         )
         st.pyplot(fig2)
         plt.close(fig2)
 
-    # ── Deprivation view ─────────────────────────────────────────────────
-    elif view_level == "By deprivation":
+    # ── TAB 3: Deprivation ──────────────────────────────────────────────
+    with tab_dep:
         st.header(f"{area_name} – by deprivation")
         st.caption("Deprivation quintiles based on NIMDM 2017 ward-level scores (1 = most deprived, 5 = least deprived)")
 
@@ -726,9 +792,17 @@ def main():
         if not has_dep:
             st.warning("Deprivation data not available. Refresh data to include NIMDM linkage.")
         else:
-            # LCG filter for deprivation view
-            lcg_options = ["All Northern Ireland"] + sorted(pc["LCG"].dropna().unique().tolist())
-            selected_dep_lcg = st.selectbox("Filter by LCG", lcg_options, key="dep_lcg_filter")
+            # ── Controls row ────────────────────────────────────────────
+            ctrl1, ctrl2 = st.columns(2)
+            with ctrl1:
+                lcg_options = ["All Northern Ireland"] + sorted(pc["LCG"].dropna().unique().tolist())
+                selected_dep_lcg = st.selectbox("Filter by LCG", lcg_options, key="tab_dep_lcg")
+            with ctrl2:
+                colour_by = st.radio("Colour practices by",
+                                     ["Deprivation quintile", "LCG"],
+                                     horizontal=True,
+                                     key="tab_dep_colour_by")
+
             if selected_dep_lcg != "All Northern Ireland":
                 pc_dep = pc[pc["LCG"] == selected_dep_lcg]
                 area_label = selected_dep_lcg
@@ -736,7 +810,7 @@ def main():
                 pc_dep = pc
                 area_label = "Northern Ireland"
 
-            # Bar chart: mean prescribing rate by quintile
+            # ── Quintile bar chart ──────────────────────────────────────
             dep_summary = pc_dep.dropna(subset=["DepQuintile"]).groupby("DepQuintile").agg(
                 Practices=("Practice", "nunique"),
                 MeanRate=(metric, "mean"),
@@ -746,17 +820,14 @@ def main():
                 Patients=("RegisteredPatients", "sum"),
             ).reset_index()
             dep_summary["DepQuintile"] = dep_summary["DepQuintile"].astype(int)
-
-            quintile_labels = {1: "Q1\nMost deprived", 2: "Q2", 3: "Q3", 4: "Q4", 5: "Q5\nLeast deprived"}
-            dep_summary["Label"] = dep_summary["DepQuintile"].map(quintile_labels)
+            dep_summary["Label"] = dep_summary["DepQuintile"].map(QUINTILE_LABELS)
 
             fig_dep, ax_dep = plt.subplots(figsize=(8, 4.5))
-            colours_dep = {1: "#d32f2f", 2: "#f57c00", 3: "#fbc02d", 4: "#66bb6a", 5: "#1e88e5"}
-            bar_colours = [colours_dep.get(int(q), "#999") for q in dep_summary["DepQuintile"]]
+            bar_colours = [DEP_COLOURS.get(int(q), "#999") for q in dep_summary["DepQuintile"]]
             ax_dep.bar(dep_summary["Label"], dep_summary["MeanRate"], color=bar_colours, edgecolor="white")
             ni_mean_line = pc[metric].mean()
-            ax_dep.axhline(ni_mean_line, color="#333", linewidth=1.2, linestyle="--", label=f"NI mean: {ni_mean_line:.2f}")
-            label_metric = "Items per patient" if metric == "ItemsPerCapita" else "Cost (£) per patient"
+            ax_dep.axhline(ni_mean_line, color="#333", linewidth=1.2, linestyle="--",
+                           label=f"NI mean: {ni_mean_line:.2f}")
             ax_dep.set_ylabel(label_metric)
             ax_dep.set_title(f"{area_name} – mean {label_metric.lower()} by deprivation quintile ({area_label})")
             ax_dep.legend()
@@ -764,7 +835,7 @@ def main():
             st.pyplot(fig_dep)
             plt.close(fig_dep)
 
-            # Ratio – only show if both Q1 and Q5 exist in the filtered data
+            # Ratio
             q1_rows = dep_summary[dep_summary["DepQuintile"] == 1]["MeanRate"]
             q5_rows = dep_summary[dep_summary["DepQuintile"] == 5]["MeanRate"]
             if not q1_rows.empty and not q5_rows.empty:
@@ -772,18 +843,18 @@ def main():
                 q5_mean = q5_rows.values[0]
                 if q5_mean > 0:
                     ratio = q1_mean / q5_mean
-                    st.metric(
-                        "Q1:Q5 ratio (most vs least deprived)",
-                        f"{ratio:.2f}",
-                        help="Ratio of mean prescribing rate in most deprived quintile to least deprived. >1 means higher prescribing in deprived areas."
-                    )
+                    st.metric("Q1:Q5 ratio (most vs least deprived)", f"{ratio:.2f}",
+                              help="Ratio > 1 means higher prescribing in deprived areas.")
             elif len(dep_summary) < 5:
-                st.info(f"Note: only {len(dep_summary)} deprivation quintile(s) represented in {area_label}. Some LCGs may not have practices in all quintiles.")
+                st.info(f"Only {len(dep_summary)} quintile(s) represented in {area_label}.")
 
-            # Summary table
+            # Quintile summary table
             st.subheader("Quintile summary")
-            display_dep = dep_summary[["Label", "Practices", "Patients", "MeanRate", "MedianRate", "TotalItems", "TotalCost"]].copy()
-            display_dep.columns = ["Quintile", "Practices", "Patients", f"Mean {label_metric}", f"Median {label_metric}", "Total items", "Total cost"]
+            display_dep = dep_summary[["Label", "Practices", "Patients", "MeanRate", "MedianRate",
+                                        "TotalItems", "TotalCost"]].copy()
+            display_dep.columns = ["Quintile", "Practices", "Patients",
+                                   f"Mean {label_metric}", f"Median {label_metric}",
+                                   "Total items", "Total cost"]
             st.dataframe(
                 display_dep.style.format({
                     "Patients": "{:,.0f}",
@@ -795,24 +866,19 @@ def main():
                 use_container_width=True,
             )
 
-            # Scatter: deprivation rank vs prescribing rate
+            # ── Practice-level scatter ──────────────────────────────────
             st.subheader(f"Practice-level scatter ({area_label})")
-            fig_scat, ax_scat = plt.subplots(figsize=(10, 5))
+
             if "Ward_Dep_Rank" in pc_dep.columns:
                 scatter_data = pc_dep.dropna(subset=["Ward_Dep_Rank", metric])
-                # Colour by quintile
-                for q in sorted(scatter_data["DepQuintile"].dropna().unique()):
-                    qd = scatter_data[scatter_data["DepQuintile"] == q]
-                    ax_scat.scatter(qd["Ward_Dep_Rank"], qd[metric],
-                                    color=colours_dep.get(int(q), "#999"), alpha=0.6, s=30,
-                                    label=quintile_labels.get(int(q), f"Q{int(q)}"))
-                # Trend line
-                from numpy.polynomial.polynomial import polyfit
-                x = scatter_data["Ward_Dep_Rank"].values
-                y = scatter_data[metric].values
-                b, m_coef = polyfit(x, y, 1)
-                x_line = np.linspace(x.min(), x.max(), 100)
-                ax_scat.plot(x_line, b + m_coef * x_line, color="#333", linewidth=1.5, linestyle="--")
+
+                fig_scat, ax_scat = plt.subplots(figsize=(10, 5))
+                _scatter_by_colour(ax_scat, scatter_data, metric, colour_by)
+                _scatter_trend_line(ax_scat, scatter_data, metric)
+
+                # Highlight selected practices
+                for pno in highlight_pracnos[:5]:
+                    _scatter_highlight_practice(ax_scat, scatter_data, metric, pno, pracno_to_label)
 
                 ax_scat.set_xlabel("Ward deprivation rank (1 = most deprived)")
                 ax_scat.set_ylabel(label_metric)
@@ -833,28 +899,34 @@ def main():
             st.subheader("Individual drug scatter")
             st.caption("Select a specific drug to see its prescribing rate vs deprivation across practices.")
 
-            # Get all unique drug names from the dataset
             all_drugs = sorted(merged["VTM_NM"].dropna().unique().tolist())
 
-            # Trust/LCG filter for the drug scatter
-            drug_geo_options = ["All Northern Ireland"] + sorted(pc["Trust"].dropna().unique().tolist()) + sorted(pc["LCG"].dropna().unique().tolist())
-            drug_geo = st.selectbox(
-                "Filter by Trust or LCG",
-                drug_geo_options,
-                key="drug_scatter_geo",
-            )
+            drug_c1, drug_c2 = st.columns(2)
+            with drug_c1:
+                drug_geo_options = (["All Northern Ireland"]
+                                    + sorted(pc["Trust"].dropna().unique().tolist())
+                                    + sorted(pc["LCG"].dropna().unique().tolist()))
+                drug_geo = st.selectbox("Filter by Trust or LCG",
+                                        drug_geo_options, key="tab_dep_drug_geo")
+            with drug_c2:
+                selected_drug = st.selectbox("Select a drug (VTM name)", all_drugs,
+                                             index=None,
+                                             placeholder="Start typing to search…",
+                                             key="tab_dep_drug_select")
 
-            selected_drug = st.selectbox(
-                "Select a drug (VTM name)",
-                all_drugs,
-                index=None,
-                placeholder="Start typing to search for a drug…",
-                key="drug_scatter_select",
+            # Practice highlight for drug scatter
+            highlight_drug_label = st.selectbox(
+                "Highlight a practice on the chart (optional)",
+                ["None"] + sorted(all_labels),
+                index=0,
+                key="tab_dep_drug_highlight",
             )
+            highlight_drug_pracno = label_to_pracno.get(highlight_drug_label) if highlight_drug_label != "None" else None
 
             if selected_drug:
-                # Filter to selected drug
-                drug_filter = lambda df, drug=selected_drug: df[df["VTM_NM"].str.strip().str.lower() == drug.strip().lower()]
+                drug_filter = lambda df, drug=selected_drug: df[
+                    df["VTM_NM"].str.strip().str.lower() == drug.strip().lower()
+                ]
                 drug_pc = per_cap(merged, drug_filter)
 
                 # Apply geographic filter
@@ -865,36 +937,24 @@ def main():
                         drug_pc = drug_pc[drug_pc["LCG"] == drug_geo]
 
                 if len(drug_pc) < 5:
-                    st.info(f"Too few practices ({len(drug_pc)}) prescribing **{selected_drug}** in {drug_geo} to show a meaningful scatter.")
+                    st.info(f"Too few practices ({len(drug_pc)}) prescribing **{selected_drug}** in {drug_geo}.")
                 elif "Ward_Dep_Rank" not in drug_pc.columns or drug_pc["Ward_Dep_Rank"].isna().all():
                     st.warning("Deprivation data not available for these practices.")
                 else:
                     drug_scatter = drug_pc.dropna(subset=["Ward_Dep_Rank", metric])
 
                     fig_drug, ax_drug = plt.subplots(figsize=(10, 5))
-                    dep_colours = {1: "#d32f2f", 2: "#f57c00", 3: "#fbc02d", 4: "#66bb6a", 5: "#1e88e5"}
-                    q_labels = {1: "Q1 Most deprived", 2: "Q2", 3: "Q3", 4: "Q4", 5: "Q5 Least deprived"}
-                    for q in sorted(drug_scatter["DepQuintile"].dropna().unique()):
-                        qd = drug_scatter[drug_scatter["DepQuintile"] == q]
-                        ax_drug.scatter(
-                            qd["Ward_Dep_Rank"], qd[metric],
-                            color=dep_colours.get(int(q), "#999"), alpha=0.6, s=35,
-                            label=q_labels.get(int(q), f"Q{int(q)}"),
-                        )
+                    _scatter_by_colour(ax_drug, drug_scatter, metric, colour_by)
+                    _scatter_trend_line(ax_drug, drug_scatter, metric)
 
-                    # Trend line
-                    if len(drug_scatter) >= 10:
-                        from numpy.polynomial.polynomial import polyfit
-                        x = drug_scatter["Ward_Dep_Rank"].values
-                        y = drug_scatter[metric].values
-                        b, m_coef = polyfit(x, y, 1)
-                        x_line = np.linspace(x.min(), x.max(), 100)
-                        ax_drug.plot(x_line, b + m_coef * x_line, color="#333", linewidth=1.5, linestyle="--")
+                    # Highlight selected practice
+                    if highlight_drug_pracno:
+                        _scatter_highlight_practice(ax_drug, drug_scatter, metric,
+                                                    highlight_drug_pracno, pracno_to_label)
 
-                    drug_label = "Items per patient" if metric == "ItemsPerCapita" else "Cost (£) per patient"
                     geo_suffix = f" – {drug_geo}" if drug_geo != "All Northern Ireland" else ""
                     ax_drug.set_xlabel("Ward deprivation rank (1 = most deprived)")
-                    ax_drug.set_ylabel(drug_label)
+                    ax_drug.set_ylabel(label_metric)
                     ax_drug.set_title(f"{selected_drug} – prescribing vs deprivation{geo_suffix}")
                     ax_drug.legend(fontsize=8)
                     fig_drug.tight_layout()
@@ -904,7 +964,8 @@ def main():
                     # Stats
                     if len(drug_scatter) >= 10:
                         from scipy import stats as drug_stats
-                        tau_d, p_d = drug_stats.kendalltau(drug_scatter["Ward_Dep_Rank"], drug_scatter[metric])
+                        tau_d, p_d = drug_stats.kendalltau(drug_scatter["Ward_Dep_Rank"],
+                                                            drug_scatter[metric])
                         sig_d = "***" if p_d < 0.0005 else ("**" if p_d < 0.01 else ("*" if p_d < 0.05 else "ns"))
                         st.caption(
                             f"Kendall's τ = {tau_d:.3f} (p = {p_d:.4f}) {sig_d} · "
@@ -912,23 +973,21 @@ def main():
                             f"Negative τ = higher prescribing in more deprived areas"
                         )
 
-                    # Quick quintile summary for this drug
+                    # Quintile summary for this drug
                     if "DepQuintile" in drug_scatter.columns:
                         drug_dep = drug_scatter.groupby("DepQuintile").agg(
                             Practices=("Practice", "nunique"),
                             MeanRate=(metric, "mean"),
                         ).reset_index()
-                        drug_dep["Quintile"] = drug_dep["DepQuintile"].astype(int).map(
-                            {1: "Q1 (most deprived)", 2: "Q2", 3: "Q3", 4: "Q4", 5: "Q5 (least deprived)"}
-                        )
+                        drug_dep["Quintile"] = drug_dep["DepQuintile"].astype(int).map(QUINTILE_LABELS_FLAT)
                         st.dataframe(
                             drug_dep[["Quintile", "Practices", "MeanRate"]].rename(
-                                columns={"MeanRate": f"Mean {drug_label}"}
-                            ).style.format({f"Mean {drug_label}": "{:.4f}"}),
+                                columns={"MeanRate": f"Mean {label_metric}"}
+                            ).style.format({f"Mean {label_metric}": "{:.4f}"}),
                             use_container_width=True,
                         )
 
-            # ── Correlation summary across all therapeutic areas (always NI-wide) ──
+            # ── Correlation summary (always NI-wide) ────────────────────
             st.divider()
             st.subheader("Deprivation correlations across all therapeutic areas (all NI)")
             st.caption(
@@ -963,10 +1022,8 @@ def main():
             if corr_rows:
                 corr_df = pd.DataFrame(corr_rows).sort_values("Kendall's τ")
 
-                # Bubble chart (like Fraser fig 1)
                 fig_corr, ax_corr = plt.subplots(figsize=(10, 6))
                 colours_corr = ["#e53935" if p < 0.0005 else "#bdbdbd" for p in corr_df["p-value"]]
-                sizes = [max(20, min(300, n * 0.8)) for n in corr_df["Practices"]]
                 ax_corr.barh(
                     corr_df["Therapeutic area"],
                     corr_df["Kendall's τ"],
@@ -982,8 +1039,8 @@ def main():
                 plt.close(fig_corr)
                 st.caption("Red bars = statistically significant (p < 0.0005, Bonferroni-corrected)")
 
-                # Table
-                display_corr = corr_df[["Therapeutic area", "Kendall's τ", "p-value", "Sig", "Q1 mean", "Q5 mean", "Q1:Q5 ratio", "Practices"]].copy()
+                display_corr = corr_df[["Therapeutic area", "Kendall's τ", "p-value", "Sig",
+                                         "Q1 mean", "Q5 mean", "Q1:Q5 ratio", "Practices"]].copy()
                 st.dataframe(
                     display_corr.style.format({
                         "Kendall's τ": "{:.3f}",
@@ -998,11 +1055,11 @@ def main():
                     use_container_width=True,
                 )
 
-    # ── Practice deep-dive ──────────────────────────────────────────────
-    elif view_level == "Practice deep-dive":
+    # ── TAB 4: Practice deep-dive ───────────────────────────────────────
+    with tab_prac:
         st.header("Practice deep-dive")
 
-        selected_label = st.selectbox("Select a practice", all_labels)
+        selected_label = st.selectbox("Select a practice", all_labels, key="tab_prac_select")
         selected_pracno = label_to_pracno.get(selected_label, selected_label) if selected_label else None
 
         if selected_pracno:
@@ -1012,7 +1069,7 @@ def main():
             if not prac_matches.empty:
                 prac_row = prac_matches.iloc[0]
                 dep_q = prac_row.get("DepQuintile", None)
-                dep_label = {1: "Q1 (most deprived)", 2: "Q2", 3: "Q3", 4: "Q4", 5: "Q5 (least deprived)"}.get(
+                dep_label = QUINTILE_LABELS_FLAT.get(
                     int(dep_q) if pd.notna(dep_q) else None, "—"
                 )
                 c1, c2, c3, c4 = st.columns(4)
@@ -1023,12 +1080,12 @@ def main():
             else:
                 st.warning("Practice details not found in practice list.")
 
-            # Caterpillar chart for the selected therapeutic area, highlighting this practice
+            # Caterpillar chart
             st.subheader(f"{area_name} – where this practice sits")
             highlight_this = [(selected_pracno, "#e53935")]
             fig_cat = caterpillar_chart(
                 pc, highlight_this,
-                title=f"{area_name} – all practices (selected practice in red)",
+                title=f"{area_name} – all NI practices (selected in red)",
                 metric=metric,
             )
             st.pyplot(fig_cat)
@@ -1036,7 +1093,6 @@ def main():
 
             st.subheader("Performance across therapeutic areas")
 
-            # Get a display name for chart labels
             prac_display = selected_label.split("(")[0].strip() if selected_label else selected_pracno
 
             rows = []
@@ -1059,11 +1115,9 @@ def main():
             if rows:
                 results = pd.DataFrame(rows)
 
-                # Bar chart: practice vs NI mean
                 fig, ax = plt.subplots(figsize=(10, 5))
                 x = range(len(results))
                 w = 0.35
-                label_metric = "Items/patient" if metric == "ItemsPerCapita" else "Cost/patient (£)"
                 ax.bar([i - w / 2 for i in x], results[metric], w,
                        label=prac_display, color="#1e88e5")
                 ax.bar([i + w / 2 for i in x], results["NI mean"], w,
@@ -1077,7 +1131,6 @@ def main():
                 st.pyplot(fig)
                 plt.close(fig)
 
-                # Table
                 st.dataframe(
                     results.style.format({
                         metric: "{:.2f}",
