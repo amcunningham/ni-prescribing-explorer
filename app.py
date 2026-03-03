@@ -1453,19 +1453,19 @@ def main():
                     st.pyplot(fig_box)
                     plt.close(fig_box)
 
-                    lcg_summary = box_data_df.groupby("LCG").agg(
+                    lcg_summ = box_data_df.groupby("LCG").agg(
                         Practices=("Practice", "nunique"),
                         Mean=("X_val", "mean"),
                         Median=("X_val", "median"),
                         Min=("X_val", "min"),
                         Max=("X_val", "max"),
                     ).reset_index()
-                    lcg_summary.columns = [
+                    lcg_summ.columns = [
                         "LCG", "Practices",
                         "Mean (%)", "Median (%)", "Min (%)", "Max (%)",
                     ]
                     st.dataframe(
-                        lcg_summary.style.format({
+                        lcg_summ.style.format({
                             "Mean (%)": "{:.1f}",
                             "Median (%)": "{:.1f}",
                             "Min (%)": "{:.1f}",
