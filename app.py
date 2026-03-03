@@ -21,7 +21,7 @@ import time
 
 # ── page config ─────────────────────────────────────────────────────────
 st.set_page_config(
-    page_title="NI GP Prescribing Explorer",
+    page_title="Northern Ireland GP Prescribing Explorer",
     page_icon="💊",
     layout="wide",
 )
@@ -510,8 +510,8 @@ def practice_detail(pc, pracno, ni_mean):
 # ════════════════════════════════════════════════════════════════════════
 
 def main():
-    st.title("💊 NI GP Prescribing Explorer")
-    st.caption("Data: OpenDataNI GP Prescribing · Open Government Licence")
+    st.title("💊 Northern Ireland GP Prescribing Explorer")
+    st.caption("Data: OpenDataNI GP Prescribing · Open Government Licence · All data relates to GP practices in Northern Ireland")
 
     # ── load or download data ───────────────────────────────────────────
     merged, practices = load_data()
@@ -633,7 +633,7 @@ def main():
 
     # ── NI overview ─────────────────────────────────────────────────────
     if view_level == "NI overview":
-        st.header(f"{area_name} – NI overview")
+        st.header(f"{area_name} – Northern Ireland overview")
 
         col1, col2, col3, col4 = st.columns(4)
         col1.metric("Practices", f"{len(pc)}")
@@ -726,8 +726,18 @@ def main():
         if not has_dep:
             st.warning("Deprivation data not available. Refresh data to include NIMDM linkage.")
         else:
+            # LCG filter for deprivation view
+            lcg_options = ["All Northern Ireland"] + sorted(pc["LCG"].dropna().unique().tolist())
+            selected_dep_lcg = st.selectbox("Filter by LCG", lcg_options, key="dep_lcg_filter")
+            if selected_dep_lcg != "All Northern Ireland":
+                pc_dep = pc[pc["LCG"] == selected_dep_lcg]
+                area_label = selected_dep_lcg
+            else:
+                pc_dep = pc
+                area_label = "Northern Ireland"
+
             # Bar chart: mean prescribing rate by quintile
-            dep_summary = pc.dropna(subset=["DepQuintile"]).groupby("DepQuintile").agg(
+            dep_summary = pc_dep.dropna(subset=["DepQuintile"]).groupby("DepQuintile").agg(
                 Practices=("Practice", "nunique"),
                 MeanRate=(metric, "mean"),
                 MedianRate=(metric, "median"),
@@ -741,28 +751,34 @@ def main():
             dep_summary["Label"] = dep_summary["DepQuintile"].map(quintile_labels)
 
             fig_dep, ax_dep = plt.subplots(figsize=(8, 4.5))
-            colours_dep = ["#d32f2f", "#f57c00", "#fbc02d", "#66bb6a", "#1e88e5"]
-            ax_dep.bar(dep_summary["Label"], dep_summary["MeanRate"], color=colours_dep, edgecolor="white")
+            colours_dep = {1: "#d32f2f", 2: "#f57c00", 3: "#fbc02d", 4: "#66bb6a", 5: "#1e88e5"}
+            bar_colours = [colours_dep.get(int(q), "#999") for q in dep_summary["DepQuintile"]]
+            ax_dep.bar(dep_summary["Label"], dep_summary["MeanRate"], color=bar_colours, edgecolor="white")
             ni_mean_line = pc[metric].mean()
             ax_dep.axhline(ni_mean_line, color="#333", linewidth=1.2, linestyle="--", label=f"NI mean: {ni_mean_line:.2f}")
             label_metric = "Items per patient" if metric == "ItemsPerCapita" else "Cost (£) per patient"
             ax_dep.set_ylabel(label_metric)
-            ax_dep.set_title(f"{area_name} – mean {label_metric.lower()} by deprivation quintile")
+            ax_dep.set_title(f"{area_name} – mean {label_metric.lower()} by deprivation quintile ({area_label})")
             ax_dep.legend()
             fig_dep.tight_layout()
             st.pyplot(fig_dep)
             plt.close(fig_dep)
 
-            # Ratio
-            q1_mean = dep_summary[dep_summary["DepQuintile"] == 1]["MeanRate"].values[0]
-            q5_mean = dep_summary[dep_summary["DepQuintile"] == 5]["MeanRate"].values[0]
-            if q5_mean > 0:
-                ratio = q1_mean / q5_mean
-                st.metric(
-                    "Q1:Q5 ratio (most vs least deprived)",
-                    f"{ratio:.2f}",
-                    help="Ratio of mean prescribing rate in most deprived quintile to least deprived. >1 means higher prescribing in deprived areas."
-                )
+            # Ratio – only show if both Q1 and Q5 exist in the filtered data
+            q1_rows = dep_summary[dep_summary["DepQuintile"] == 1]["MeanRate"]
+            q5_rows = dep_summary[dep_summary["DepQuintile"] == 5]["MeanRate"]
+            if not q1_rows.empty and not q5_rows.empty:
+                q1_mean = q1_rows.values[0]
+                q5_mean = q5_rows.values[0]
+                if q5_mean > 0:
+                    ratio = q1_mean / q5_mean
+                    st.metric(
+                        "Q1:Q5 ratio (most vs least deprived)",
+                        f"{ratio:.2f}",
+                        help="Ratio of mean prescribing rate in most deprived quintile to least deprived. >1 means higher prescribing in deprived areas."
+                    )
+            elif len(dep_summary) < 5:
+                st.info(f"Note: only {len(dep_summary)} deprivation quintile(s) represented in {area_label}. Some LCGs may not have practices in all quintiles.")
 
             # Summary table
             st.subheader("Quintile summary")
@@ -780,15 +796,15 @@ def main():
             )
 
             # Scatter: deprivation rank vs prescribing rate
-            st.subheader("Practice-level scatter")
+            st.subheader(f"Practice-level scatter ({area_label})")
             fig_scat, ax_scat = plt.subplots(figsize=(10, 5))
-            if "Ward_Dep_Rank" in pc.columns:
-                scatter_data = pc.dropna(subset=["Ward_Dep_Rank", metric])
+            if "Ward_Dep_Rank" in pc_dep.columns:
+                scatter_data = pc_dep.dropna(subset=["Ward_Dep_Rank", metric])
                 # Colour by quintile
                 for q in sorted(scatter_data["DepQuintile"].dropna().unique()):
                     qd = scatter_data[scatter_data["DepQuintile"] == q]
                     ax_scat.scatter(qd["Ward_Dep_Rank"], qd[metric],
-                                    color=colours_dep[int(q)-1], alpha=0.6, s=30,
+                                    color=colours_dep.get(int(q), "#999"), alpha=0.6, s=30,
                                     label=quintile_labels.get(int(q), f"Q{int(q)}"))
                 # Trend line
                 from numpy.polynomial.polynomial import polyfit
@@ -800,7 +816,7 @@ def main():
 
                 ax_scat.set_xlabel("Ward deprivation rank (1 = most deprived)")
                 ax_scat.set_ylabel(label_metric)
-                ax_scat.set_title(f"{area_name} – prescribing vs deprivation")
+                ax_scat.set_title(f"{area_name} – prescribing vs deprivation ({area_label})")
                 ax_scat.legend(fontsize=8)
                 fig_scat.tight_layout()
                 st.pyplot(fig_scat)
@@ -812,8 +828,8 @@ def main():
                 sig = "***" if p_val < 0.0005 else ("**" if p_val < 0.01 else ("*" if p_val < 0.05 else "ns"))
                 st.caption(f"Kendall's τ = {tau:.3f} (p = {p_val:.4f}) {sig} · Negative τ = higher prescribing in more deprived areas")
 
-            # ── Correlation summary across all therapeutic areas ──────────
-            st.subheader("Deprivation correlations across all therapeutic areas")
+            # ── Correlation summary across all therapeutic areas (always NI-wide) ──
+            st.subheader("Deprivation correlations across all therapeutic areas (all NI)")
             st.caption(
                 "Kendall's τ for each therapeutic area. Negative values mean higher "
                 "prescribing in more deprived areas. *** p < 0.0005 (Bonferroni-corrected)."
