@@ -655,11 +655,18 @@ def main():
         if selected_practice:
             st.subheader(f"{selected_label}")
 
-            prac_row = practices[practices["PracticeName"] == selected_practice].iloc[0]
-            c1, c2, c3 = st.columns(3)
-            c1.metric("LCG", prac_row.get("LCG", "—"))
-            c2.metric("Trust", prac_row.get("Trust", "—"))
-            c3.metric("Registered patients", f"{int(prac_row.get('RegisteredPatients', 0)):,}")
+            prac_matches = practices[practices["PracticeName"].str.strip() == selected_practice]
+            if prac_matches.empty:
+                # Fallback: try case-insensitive contains
+                prac_matches = practices[practices["PracticeName"].str.contains(selected_practice, case=False, na=False)]
+            if not prac_matches.empty:
+                prac_row = prac_matches.iloc[0]
+                c1, c2, c3 = st.columns(3)
+                c1.metric("LCG", prac_row.get("LCG", "—"))
+                c2.metric("Trust", prac_row.get("Trust", "—"))
+                c3.metric("Registered patients", f"{int(prac_row.get('RegisteredPatients', 0)):,}")
+            else:
+                st.warning("Practice details not found in practice list.")
 
             st.subheader("Performance across therapeutic areas")
 
@@ -667,7 +674,7 @@ def main():
             for ta_name, ta in THERAPEUTIC_AREAS.items():
                 ta_pc = per_cap(merged, ta["filter"])
                 ta_mean = ta_pc[metric].mean()
-                prac = ta_pc[ta_pc["PracticeName"] == selected_practice]
+                prac = ta_pc[ta_pc["PracticeName"].str.strip() == selected_practice]
                 if not prac.empty:
                     val = prac.iloc[0][metric]
                     pct = ((val - ta_mean) / ta_mean) * 100
