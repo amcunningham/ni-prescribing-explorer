@@ -1179,12 +1179,22 @@ def main():
                 key="tab_qof_view",
             )
 
-            qof_colour_by = st.radio(
-                "Colour practices by",
-                ["Deprivation quintile", "LCG"],
-                horizontal=True,
-                key="tab_qof_colour_by",
-            )
+            ctrl_col1, ctrl_col2 = st.columns(2)
+            with ctrl_col1:
+                qof_colour_by = st.radio(
+                    "Colour practices by",
+                    ["Deprivation quintile", "LCG"],
+                    horizontal=True,
+                    key="tab_qof_colour_by",
+                )
+            with ctrl_col2:
+                lcg_options = ["All"] + sorted(LCG_COLOURS.keys())
+                qof_lcg_filter = st.selectbox(
+                    "Filter to LCG",
+                    lcg_options,
+                    index=0,
+                    key="tab_qof_lcg_filter",
+                )
 
             ta_pc = pc  # uses sidebar therapeutic area or individual drug
             qof_chart_label = display_name
@@ -1328,6 +1338,10 @@ def main():
                 elif qof_view == "Disease prevalence" and prev_df is None:
                     st.warning("Disease prevalence data not available.")
 
+            # ── Apply LCG filter ────────────────────────────────────────
+            if len(scatter_df) > 0 and qof_lcg_filter != "All":
+                scatter_df = scatter_df[scatter_df["LCG"] == qof_lcg_filter].copy()
+
             # ── Common scatter + stats section ─────────────────────────
             if len(scatter_df) > 0 and len(scatter_df) < 5:
                 st.warning(
@@ -1393,7 +1407,8 @@ def main():
 
                 ax.set_xlabel(x_label_full)
                 ax.set_ylabel(label_metric)
-                ax.set_title(chart_title)
+                _lcg_suffix = f" ({qof_lcg_filter})" if qof_lcg_filter != "All" else ""
+                ax.set_title(chart_title + _lcg_suffix)
                 ax.legend(fontsize=8, loc="best")
                 fig.tight_layout()
                 st.pyplot(fig)
@@ -1410,20 +1425,68 @@ def main():
                         f"{sig} at 5% level \u00b7 {len(valid)} practices"
                     )
 
-                # ── By deprivation quintile ────────────────────────────
+                # ── Boxplots: by LCG or deprivation quintile ──────────
                 st.divider()
-                st.subheader(dep_title)
+                box_data_df = scatter_df[scatter_df["X_val"].notna()].copy()
 
-                dep_data = scatter_df[scatter_df["X_val"].notna()].copy()
-                if len(dep_data) > 0:
+                if qof_colour_by == "LCG" and len(box_data_df) > 0:
+                    # Boxplot by LCG
+                    _box_by = "LCG"
+                    _box_title = dep_y_label + " by LCG"
+                    st.subheader(_box_title)
+
                     fig_box, ax_box = plt.subplots(figsize=(8, 5))
-                    quintiles = sorted(dep_data["DepQuintile"].dropna().unique())
-                    box_data = [
-                        dep_data[dep_data["DepQuintile"] == q]["X_val"].values
+                    lcg_names = sorted(box_data_df["LCG"].dropna().unique())
+                    b_data = [
+                        box_data_df[box_data_df["LCG"] == lcg]["X_val"].values
+                        for lcg in lcg_names
+                    ]
+                    bp = ax_box.boxplot(
+                        b_data, labels=lcg_names, patch_artist=True,
+                    )
+                    for patch, lcg in zip(bp["boxes"], lcg_names):
+                        patch.set_facecolor(LCG_COLOURS.get(lcg, "#ccc"))
+                        patch.set_alpha(0.7)
+                    ax_box.set_ylabel(dep_y_label)
+                    ax_box.set_title(_box_title)
+                    fig_box.tight_layout()
+                    st.pyplot(fig_box)
+                    plt.close(fig_box)
+
+                    lcg_summary = box_data_df.groupby("LCG").agg(
+                        Practices=("Practice", "nunique"),
+                        Mean=("X_val", "mean"),
+                        Median=("X_val", "median"),
+                        Min=("X_val", "min"),
+                        Max=("X_val", "max"),
+                    ).reset_index()
+                    lcg_summary.columns = [
+                        "LCG", "Practices",
+                        "Mean (%)", "Median (%)", "Min (%)", "Max (%)",
+                    ]
+                    st.dataframe(
+                        lcg_summary.style.format({
+                            "Mean (%)": "{:.1f}",
+                            "Median (%)": "{:.1f}",
+                            "Min (%)": "{:.1f}",
+                            "Max (%)": "{:.1f}",
+                        }),
+                        use_container_width=True,
+                        hide_index=True,
+                    )
+
+                elif qof_colour_by != "LCG" and len(box_data_df) > 0:
+                    # Boxplot by deprivation quintile
+                    st.subheader(dep_title)
+
+                    fig_box, ax_box = plt.subplots(figsize=(8, 5))
+                    quintiles = sorted(box_data_df["DepQuintile"].dropna().unique())
+                    b_data = [
+                        box_data_df[box_data_df["DepQuintile"] == q]["X_val"].values
                         for q in quintiles
                     ]
                     bp = ax_box.boxplot(
-                        box_data,
+                        b_data,
                         labels=[
                             QUINTILE_LABELS.get(int(q), f"Q{int(q)}")
                             for q in quintiles
@@ -1439,7 +1502,7 @@ def main():
                     st.pyplot(fig_box)
                     plt.close(fig_box)
 
-                    dep_summary = dep_data.groupby("DepQuintile").agg(
+                    dep_summary = box_data_df.groupby("DepQuintile").agg(
                         Practices=("Practice", "nunique"),
                         Mean=("X_val", "mean"),
                         Median=("X_val", "median"),
