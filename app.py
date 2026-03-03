@@ -498,14 +498,50 @@ def main():
         format_func=lambda x: "Items per patient" if x == "ItemsPerCapita" else "Cost per patient (£)",
     )
 
-    # Practice search / highlight
-    all_practices = sorted(practices["PracticeName"].dropna().unique())
-    highlight_names = st.sidebar.multiselect(
+    # Practice lookup helper – build combined labels for easier identification
+    practices["_label"] = (
+        practices["PracticeName"].str.strip()
+        + "  (" + practices["Postcode"].str.strip() + ", "
+        + practices["LCG"].str.strip() + ", #"
+        + practices["PracNo"].str.strip() + ")"
+    )
+    label_to_name = dict(zip(practices["_label"], practices["PracticeName"].str.strip()))
+    name_to_label = dict(zip(practices["PracticeName"].str.strip(), practices["_label"]))
+
+    # Find practice by…
+    find_by = st.sidebar.radio(
+        "Find practices by",
+        ["Name", "Postcode area", "LCG / Trust", "Practice number"],
+        horizontal=True,
+    )
+
+    if find_by == "Name":
+        all_labels = sorted(label_to_name.keys())
+    elif find_by == "Postcode area":
+        bt_areas = sorted(practices["Postcode"].str.extract(r"(BT\d+)", expand=False).dropna().unique())
+        selected_bt = st.sidebar.selectbox("Postcode area", bt_areas)
+        filtered = practices[practices["Postcode"].str.startswith(selected_bt)]
+        all_labels = sorted(filtered["_label"].unique())
+    elif find_by == "LCG / Trust":
+        selected_lcg = st.sidebar.selectbox("LCG area", sorted(practices["LCG"].dropna().unique()))
+        filtered = practices[practices["LCG"] == selected_lcg]
+        all_labels = sorted(filtered["_label"].unique())
+    else:  # Practice number
+        prac_num = st.sidebar.text_input("Practice number", "")
+        if prac_num.strip():
+            filtered = practices[practices["PracNo"].str.strip() == prac_num.strip()]
+            all_labels = sorted(filtered["_label"].unique())
+        else:
+            all_labels = sorted(label_to_name.keys())
+
+    highlight_labels = st.sidebar.multiselect(
         "Highlight practices",
-        all_practices,
+        all_labels,
         default=[],
         help="Select up to 5 practices to highlight on charts",
     )
+    # Convert labels back to names for internal use
+    highlight_names = [label_to_name.get(l, l) for l in highlight_labels]
 
     view_level = st.sidebar.radio("View level", ["NI overview", "By Trust / LCG", "Practice deep-dive"])
 
@@ -613,10 +649,11 @@ def main():
     elif view_level == "Practice deep-dive":
         st.header("Practice deep-dive")
 
-        selected_practice = st.selectbox("Select a practice", all_practices)
+        selected_label = st.selectbox("Select a practice", all_labels)
+        selected_practice = label_to_name.get(selected_label, selected_label) if selected_label else None
 
         if selected_practice:
-            st.subheader(f"{selected_practice}")
+            st.subheader(f"{selected_label}")
 
             prac_row = practices[practices["PracticeName"] == selected_practice].iloc[0]
             c1, c2, c3 = st.columns(3)
