@@ -812,6 +812,75 @@ def main():
                 sig = "***" if p_val < 0.0005 else ("**" if p_val < 0.01 else ("*" if p_val < 0.05 else "ns"))
                 st.caption(f"Kendall's τ = {tau:.3f} (p = {p_val:.4f}) {sig} · Negative τ = higher prescribing in more deprived areas")
 
+            # ── Correlation summary across all therapeutic areas ──────────
+            st.subheader("Deprivation correlations across all therapeutic areas")
+            st.caption(
+                "Kendall's τ for each therapeutic area. Negative values mean higher "
+                "prescribing in more deprived areas. *** p < 0.0005 (Bonferroni-corrected)."
+            )
+
+            from scipy import stats as sp_stats
+            corr_rows = []
+            for ta_name, ta in THERAPEUTIC_AREAS.items():
+                ta_pc = per_cap(merged, ta["filter"])
+                if "Ward_Dep_Rank" not in ta_pc.columns:
+                    continue
+                ta_data = ta_pc.dropna(subset=["Ward_Dep_Rank", metric])
+                if len(ta_data) < 10:
+                    continue
+                tau_val, p_val = sp_stats.kendalltau(ta_data["Ward_Dep_Rank"], ta_data[metric])
+                q1 = ta_data[ta_data["DepQuintile"] == 1][metric].mean() if "DepQuintile" in ta_data.columns else None
+                q5 = ta_data[ta_data["DepQuintile"] == 5][metric].mean() if "DepQuintile" in ta_data.columns else None
+                ratio = q1 / q5 if q5 and q5 > 0 else None
+                corr_rows.append({
+                    "Therapeutic area": ta_name,
+                    "Kendall's τ": tau_val,
+                    "p-value": p_val,
+                    "Sig": "***" if p_val < 0.0005 else ("**" if p_val < 0.01 else ("*" if p_val < 0.05 else "")),
+                    "Q1 mean": q1,
+                    "Q5 mean": q5,
+                    "Q1:Q5 ratio": ratio,
+                    "Practices": len(ta_data),
+                })
+
+            if corr_rows:
+                corr_df = pd.DataFrame(corr_rows).sort_values("Kendall's τ")
+
+                # Bubble chart (like Fraser fig 1)
+                fig_corr, ax_corr = plt.subplots(figsize=(10, 6))
+                colours_corr = ["#e53935" if p < 0.0005 else "#bdbdbd" for p in corr_df["p-value"]]
+                sizes = [max(20, min(300, n * 0.8)) for n in corr_df["Practices"]]
+                ax_corr.barh(
+                    corr_df["Therapeutic area"],
+                    corr_df["Kendall's τ"],
+                    color=colours_corr,
+                    edgecolor="white",
+                    height=0.6,
+                )
+                ax_corr.axvline(0, color="#333", linewidth=0.8)
+                ax_corr.set_xlabel("Kendall's τ (negative = higher prescribing in more deprived areas)")
+                ax_corr.set_title("Prescribing and deprivation: correlations by therapeutic area")
+                fig_corr.tight_layout()
+                st.pyplot(fig_corr)
+                plt.close(fig_corr)
+                st.caption("Red bars = statistically significant (p < 0.0005, Bonferroni-corrected)")
+
+                # Table
+                display_corr = corr_df[["Therapeutic area", "Kendall's τ", "p-value", "Sig", "Q1 mean", "Q5 mean", "Q1:Q5 ratio", "Practices"]].copy()
+                st.dataframe(
+                    display_corr.style.format({
+                        "Kendall's τ": "{:.3f}",
+                        "p-value": "{:.4f}",
+                        "Q1 mean": "{:.3f}",
+                        "Q5 mean": "{:.3f}",
+                        "Q1:Q5 ratio": "{:.2f}",
+                    }).map(
+                        lambda v: "color: #e53935; font-weight: bold" if v == "***" else "",
+                        subset=["Sig"],
+                    ),
+                    use_container_width=True,
+                )
+
     # ── Practice deep-dive ──────────────────────────────────────────────
     elif view_level == "Practice deep-dive":
         st.header("Practice deep-dive")
