@@ -377,13 +377,16 @@ def caterpillar_chart(pc, highlight_practices=None, title="", metric="ItemsPerCa
     ax.axhline(ni_mean, color="#333333", linewidth=1.2, linestyle="--", label=f"NI mean: {ni_mean:.2f}")
 
     if highlight_practices:
-        for name, colour in highlight_practices:
-            row = pc_sorted[pc_sorted["PracticeName"].str.contains(name, case=False, na=False)]
+        for pracno, colour in highlight_practices:
+            row = pc_sorted[pc_sorted["Practice"].str.strip() == str(pracno).strip()]
             if not row.empty:
                 r = row.iloc[0]
+                display_name = r.get("PracticeName", pracno)
+                if isinstance(display_name, str):
+                    display_name = display_name.strip()
                 ax.bar(r["rank"], r[metric], color=colour, width=2.5, zorder=5)
                 ax.annotate(
-                    name,
+                    display_name,
                     (r["rank"], r[metric]),
                     textcoords="offset points",
                     xytext=(5, 8),
@@ -437,9 +440,9 @@ def lcg_summary(pc):
     return lcg.sort_values("ItemsPerCapita", ascending=False)
 
 
-def practice_detail(pc, practice_name, ni_mean):
+def practice_detail(pc, pracno, ni_mean):
     """Metrics for a specific practice vs NI mean."""
-    row = pc[pc["PracticeName"].str.contains(practice_name, case=False, na=False)]
+    row = pc[pc["Practice"].str.strip() == str(pracno).strip()]
     if row.empty:
         return None
     r = row.iloc[0]
@@ -517,8 +520,8 @@ def main():
         + practices["LCG"].str.strip() + ", #"
         + practices["PracNo"].str.strip() + ")"
     )
-    label_to_name = dict(zip(practices["_label"], practices["PracticeName"].str.strip()))
-    name_to_label = dict(zip(practices["PracticeName"].str.strip(), practices["_label"]))
+    label_to_pracno = dict(zip(practices["_label"], practices["PracNo"].str.strip()))
+    pracno_to_label = dict(zip(practices["PracNo"].str.strip(), practices["_label"]))
 
     # Find practice by…
     find_by = st.sidebar.radio(
@@ -528,7 +531,7 @@ def main():
     )
 
     if find_by == "Name":
-        all_labels = sorted(label_to_name.keys())
+        all_labels = sorted(label_to_pracno.keys())
     elif find_by == "Postcode area":
         bt_areas = sorted(practices["Postcode"].str.extract(r"(BT\d+)", expand=False).dropna().unique())
         selected_bt = st.sidebar.selectbox("Postcode area", bt_areas)
@@ -544,7 +547,7 @@ def main():
             filtered = practices[practices["PracNo"].str.strip() == prac_num.strip()]
             all_labels = sorted(filtered["_label"].unique())
         else:
-            all_labels = sorted(label_to_name.keys())
+            all_labels = sorted(label_to_pracno.keys())
 
     highlight_labels = st.sidebar.multiselect(
         "Highlight practices",
@@ -552,22 +555,14 @@ def main():
         default=[],
         help="Select up to 5 practices to highlight on charts",
     )
-    # Convert labels back to names for internal use
-    highlight_names = [label_to_name.get(l, l) for l in highlight_labels]
+    # Convert labels back to practice numbers for internal use
+    highlight_pracnos = [label_to_pracno.get(l, l) for l in highlight_labels]
 
     view_level = st.sidebar.radio("View level", ["NI overview", "By Trust / LCG", "Practice deep-dive"])
 
     # Data management
     st.sidebar.divider()
-    st.sidebar.caption("Data management")
-    dm_col1, dm_col2 = st.sidebar.columns(2)
-    if dm_col1.button("🔄 Refresh from OpenDataNI"):
-        for f in [CACHE_FILE, CACHE_PRACTICES]:
-            if os.path.exists(f):
-                os.remove(f)
-        st.cache_data.clear()
-        st.rerun()
-    if dm_col2.button("📁 Load different files"):
+    if st.sidebar.button("🔄 Refresh data from OpenDataNI"):
         for f in [CACHE_FILE, CACHE_PRACTICES]:
             if os.path.exists(f):
                 os.remove(f)
@@ -590,7 +585,7 @@ def main():
 
         # Caterpillar
         colours = ["#e53935", "#1e88e5", "#43a047", "#fb8c00", "#8e24aa"]
-        highlight = [(n, colours[i % len(colours)]) for i, n in enumerate(highlight_names[:5])]
+        highlight = [(n, colours[i % len(colours)]) for i, n in enumerate(highlight_pracnos[:5])]
         fig = caterpillar_chart(pc, highlight, title=f"{area_name} – items per registered patient", metric=metric)
         st.pyplot(fig)
         plt.close(fig)
@@ -609,11 +604,11 @@ def main():
         plt.close(fig2)
 
         # Highlighted practice cards
-        if highlight_names:
+        if highlight_pracnos:
             st.subheader("Highlighted practices")
-            cols = st.columns(min(len(highlight_names), 3))
-            for i, name in enumerate(highlight_names):
-                detail = practice_detail(pc, name, ni_mean)
+            cols = st.columns(min(len(highlight_pracnos), 3))
+            for i, pno in enumerate(highlight_pracnos):
+                detail = practice_detail(pc, pno, ni_mean)
                 if detail:
                     with cols[i % 3]:
                         st.markdown(f"**{detail['Practice']}**")
@@ -655,7 +650,7 @@ def main():
             pc_trust = pc
 
         colours = ["#e53935", "#1e88e5", "#43a047", "#fb8c00", "#8e24aa"]
-        highlight = [(n, colours[i % len(colours)]) for i, n in enumerate(highlight_names[:5])]
+        highlight = [(n, colours[i % len(colours)]) for i, n in enumerate(highlight_pracnos[:5])]
         fig2 = caterpillar_chart(
             pc_trust, highlight,
             title=f"{area_name} – {selected_trust if selected_trust != 'All' else 'NI'} practices",
@@ -669,15 +664,12 @@ def main():
         st.header("Practice deep-dive")
 
         selected_label = st.selectbox("Select a practice", all_labels)
-        selected_practice = label_to_name.get(selected_label, selected_label) if selected_label else None
+        selected_pracno = label_to_pracno.get(selected_label, selected_label) if selected_label else None
 
-        if selected_practice:
+        if selected_pracno:
             st.subheader(f"{selected_label}")
 
-            prac_matches = practices[practices["PracticeName"].str.strip() == selected_practice]
-            if prac_matches.empty:
-                # Fallback: try case-insensitive contains
-                prac_matches = practices[practices["PracticeName"].str.contains(selected_practice, case=False, na=False)]
+            prac_matches = practices[practices["PracNo"].str.strip() == str(selected_pracno).strip()]
             if not prac_matches.empty:
                 prac_row = prac_matches.iloc[0]
                 c1, c2, c3 = st.columns(3)
@@ -689,7 +681,7 @@ def main():
 
             # Caterpillar chart for the selected therapeutic area, highlighting this practice
             st.subheader(f"{area_name} – where this practice sits")
-            highlight_this = [(selected_practice, "#e53935")]
+            highlight_this = [(selected_pracno, "#e53935")]
             fig_cat = caterpillar_chart(
                 pc, highlight_this,
                 title=f"{area_name} – all practices (selected practice in red)",
@@ -700,11 +692,14 @@ def main():
 
             st.subheader("Performance across therapeutic areas")
 
+            # Get a display name for chart labels
+            prac_display = selected_label.split("(")[0].strip() if selected_label else selected_pracno
+
             rows = []
             for ta_name, ta in THERAPEUTIC_AREAS.items():
                 ta_pc = per_cap(merged, ta["filter"])
                 ta_mean = ta_pc[metric].mean()
-                prac = ta_pc[ta_pc["PracticeName"].str.strip() == selected_practice]
+                prac = ta_pc[ta_pc["Practice"].str.strip() == str(selected_pracno).strip()]
                 if not prac.empty:
                     val = prac.iloc[0][metric]
                     pct = ((val - ta_mean) / ta_mean) * 100
@@ -726,13 +721,13 @@ def main():
                 w = 0.35
                 label_metric = "Items/patient" if metric == "ItemsPerCapita" else "Cost/patient (£)"
                 ax.bar([i - w / 2 for i in x], results[metric], w,
-                       label=selected_practice, color="#1e88e5")
+                       label=prac_display, color="#1e88e5")
                 ax.bar([i + w / 2 for i in x], results["NI mean"], w,
                        label="NI mean", color="#bdbdbd")
                 ax.set_xticks(list(x))
                 ax.set_xticklabels(results["Therapeutic area"], rotation=35, ha="right", fontsize=8)
                 ax.set_ylabel(label_metric)
-                ax.set_title(f"{selected_practice} vs NI average")
+                ax.set_title(f"{prac_display} vs NI average")
                 ax.legend()
                 fig.tight_layout()
                 st.pyplot(fig)
@@ -751,18 +746,6 @@ def main():
                     ),
                     use_container_width=True,
                 )
-
-            # Ranking in current area
-            st.subheader(f"Ranking – {area_name}")
-            colours_hl = ["#e53935", "#1e88e5", "#43a047", "#fb8c00", "#8e24aa"]
-            highlight = [(selected_practice, "#e53935")]
-            highlight += [(n, colours_hl[(i + 1) % len(colours_hl)])
-                         for i, n in enumerate(highlight_names[:4]) if n != selected_practice]
-            fig3 = caterpillar_chart(pc, highlight,
-                                     title=f"{area_name} – {selected_practice} highlighted",
-                                     metric=metric)
-            st.pyplot(fig3)
-            plt.close(fig3)
 
 
 if __name__ == "__main__":
