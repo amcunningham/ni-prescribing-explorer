@@ -1213,38 +1213,15 @@ def main():
                     f"{mean_reg:.0f} patients per practice"
                 )
 
-            # Controls row: therapeutic area / individual drug + colour-by
-            # Controls: prescribing area (unless sidebar drug overrides) + colour
-            if not sidebar_drug:
-                ctrl1, ctrl2 = st.columns(2)
-                with ctrl1:
-                    suggested_ta = QOF_SUGGESTED_TA.get(selected_code, "All prescribing")
-                    ta_names = list(THERAPEUTIC_AREAS.keys())
-                    suggested_idx = ta_names.index(suggested_ta) if suggested_ta in ta_names else 0
-                    qof_ta_name = st.selectbox(
-                        "Compare with prescribing area",
-                        ta_names,
-                        index=suggested_idx,
-                        key="tab_qof_ta",
-                    )
-                with ctrl2:
-                    qof_colour_by = st.radio(
-                        "Colour practices by",
-                        ["Deprivation quintile", "LCG"],
-                        horizontal=True,
-                        key="tab_qof_colour_by",
-                    )
-                ta_pc = per_cap_by_name(merged, qof_ta_name)
-                qof_chart_label = qof_ta_name
-            else:
-                qof_colour_by = st.radio(
-                    "Colour practices by",
-                    ["Deprivation quintile", "LCG"],
-                    horizontal=True,
-                    key="tab_qof_colour_by",
-                )
-                ta_pc = pc  # already computed from sidebar drug
-                qof_chart_label = sidebar_drug
+            # Colour-by control (prescribing area comes from sidebar)
+            qof_colour_by = st.radio(
+                "Colour practices by",
+                ["Deprivation quintile", "LCG"],
+                horizontal=True,
+                key="tab_qof_colour_by",
+            )
+            ta_pc = pc  # uses sidebar therapeutic area or individual drug
+            qof_chart_label = display_name
 
             # Merge prescribing with QOF indicator
             scatter_df = ta_pc.merge(
