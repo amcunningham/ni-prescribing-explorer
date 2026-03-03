@@ -120,6 +120,24 @@ THERAPEUTIC_AREAS = {
         )],
         "description": "Dipeptidyl peptidase-4 inhibitors – consider stepping down to SGLT2i or GLP-1 RA where appropriate (NICE NG28)",
     },
+    "Anticoagulants (oral)": {
+        "filter": lambda df: df[df["VTM_NM"].str.contains(
+            "warfarin|apixaban|rivaroxaban|edoxaban|dabigatran",
+            case=False, na=False
+        )],
+        "description": "Oral anticoagulants – DOACs and warfarin for AF, VTE and stroke prevention (NICE CG180, NG196)",
+    },
+    "Antihypertensives": {
+        "filter": lambda df: df[df["VTM_NM"].str.contains(
+            "ramipril|lisinopril|perindopril|enalapril|captopril"
+            "|losartan|candesartan|irbesartan|valsartan|olmesartan|telmisartan"
+            "|amlodipine|felodipine|nifedipine|lercanidipine"
+            "|bendroflumethiazide|indapamide|chlortalidone"
+            "|doxazosin",
+            case=False, na=False
+        )],
+        "description": "ACEi, ARBs, CCBs, thiazide-like diuretics and alpha-blockers for hypertension (NICE NG136)",
+    },
 }
 
 
@@ -549,12 +567,12 @@ QOF_SUGGESTED_TA = {
     "DM012": "Diabetes (non-insulin)",
     "DM022NI": "Statins",
     "DM023NI": "Statins",
-    "DM024NI": "Diabetes (non-insulin)",
-    "CHD002": "Statins",
+    "DM024NI": "Antihypertensives",
+    "CHD002": "Antihypertensives",
     "CHD003NI": "Statins",
-    "CHD005": "Statins",
-    "HYP003NI": "All prescribing",
-    "HYP007": "All prescribing",
+    "CHD005": "Anticoagulants (oral)",
+    "HYP003NI": "Antihypertensives",
+    "HYP007": "Antihypertensives",
     "AST003": "All prescribing",
     "COPD003": "All prescribing",
     "COPD005NI": "All prescribing",
@@ -566,12 +584,13 @@ QOF_SUGGESTED_TA = {
     "HF003": "All prescribing",
     "HF004": "All prescribing",
     "STIA005NI": "Statins",
-    "STIA007": "Statins",
-    "STIA010NI": "Statins",
-    "STIA011NI": "Statins",
-    "AF007": "All prescribing",
-    "CKD006NI": "All prescribing",
-    "CKD007NI": "All prescribing",
+    "STIA007": "Anticoagulants (oral)",
+    "STIA010NI": "Antihypertensives",
+    "STIA011NI": "Antihypertensives",
+    "AF007": "Anticoagulants (oral)",
+    "AFOO6NI": "Anticoagulants (oral)",
+    "CKD006NI": "Antihypertensives",
+    "CKD007NI": "Antihypertensives",
 }
 
 
@@ -679,6 +698,18 @@ def main():
     area = THERAPEUTIC_AREAS[area_name]
     st.sidebar.caption(area["description"])
 
+    # Individual drug override
+    all_drugs = sorted(merged["VTM_NM"].dropna().unique().tolist())
+    sidebar_drug = st.sidebar.selectbox(
+        "Or pick an individual drug",
+        all_drugs,
+        index=None,
+        placeholder="Start typing to search…",
+        key="sidebar_drug",
+    )
+    if sidebar_drug:
+        st.sidebar.caption(f"Showing: **{sidebar_drug}** (overrides therapeutic area)")
+
     metric = st.sidebar.radio(
         "Metric",
         ["ItemsPerCapita", "CostPerCapita"],
@@ -741,7 +772,15 @@ def main():
         st.rerun()
 
     # ── compute per-capita ──────────────────────────────────────────────
-    pc = per_cap(merged, area["filter"])
+    if sidebar_drug:
+        drug_filter = lambda df, drug=sidebar_drug: df[
+            df["VTM_NM"].str.strip().str.lower() == drug.strip().lower()
+        ]
+        pc = per_cap(merged, drug_filter)
+        display_name = sidebar_drug
+    else:
+        pc = per_cap(merged, area["filter"])
+        display_name = area_name
     ni_mean = pc[metric].mean()
 
     # ════════════════════════════════════════════════════════════════════
@@ -759,7 +798,7 @@ def main():
 
     # ── TAB 1: Northern Ireland overview ────────────────────────────────
     with tab_ni:
-        st.header(f"{area_name} – Northern Ireland overview")
+        st.header(f"{display_name} – Northern Ireland overview")
 
         col1, col2, col3, col4 = st.columns(4)
         col1.metric("Practices", f"{len(pc)}")
@@ -771,7 +810,7 @@ def main():
         colours = ["#e53935", "#1e88e5", "#43a047", "#fb8c00", "#8e24aa"]
         highlight = [(n, colours[i % len(colours)]) for i, n in enumerate(highlight_pracnos[:5])]
         fig = caterpillar_chart(pc, highlight,
-                                title=f"{area_name} – {label_metric.lower()} by practice rank",
+                                title=f"{display_name} – {label_metric.lower()} by practice rank",
                                 metric=metric)
         st.pyplot(fig)
         plt.close(fig)
@@ -804,9 +843,9 @@ def main():
 
     # ── TAB 2: Trust / LCG ─────────────────────────────────────────────
     with tab_area:
-        st.header(f"{area_name} – by Trust / LCG")
+        st.header(f"{display_name} – by Trust / LCG")
 
-        fig = trust_bar_chart(pc, title=f"{area_name} per capita by Trust", metric=metric)
+        fig = trust_bar_chart(pc, title=f"{display_name} per capita by Trust", metric=metric)
         st.pyplot(fig)
         plt.close(fig)
 
@@ -839,7 +878,7 @@ def main():
         highlight = [(n, colours[i % len(colours)]) for i, n in enumerate(highlight_pracnos[:5])]
         fig2 = caterpillar_chart(
             pc_trust, highlight,
-            title=f"{area_name} – {selected_trust if selected_trust != 'All Northern Ireland' else 'NI'} practices",
+            title=f"{display_name} – {selected_trust if selected_trust != 'All Northern Ireland' else 'NI'} practices",
             metric=metric,
         )
         st.pyplot(fig2)
@@ -847,7 +886,7 @@ def main():
 
     # ── TAB 3: Deprivation ──────────────────────────────────────────────
     with tab_dep:
-        st.header(f"{area_name} – by deprivation")
+        st.header(f"{display_name} – by deprivation")
         st.caption("Deprivation quintiles based on NIMDM 2017 ward-level scores (1 = most deprived, 5 = least deprived)")
 
         has_dep = "DepQuintile" in pc.columns and pc["DepQuintile"].notna().any()
@@ -891,7 +930,7 @@ def main():
             ax_dep.axhline(ni_mean_line, color="#333", linewidth=1.2, linestyle="--",
                            label=f"NI mean: {ni_mean_line:.2f}")
             ax_dep.set_ylabel(label_metric)
-            ax_dep.set_title(f"{area_name} – mean {label_metric.lower()} by deprivation quintile ({area_label})")
+            ax_dep.set_title(f"{display_name} – mean {label_metric.lower()} by deprivation quintile ({area_label})")
             ax_dep.legend()
             fig_dep.tight_layout()
             st.pyplot(fig_dep)
@@ -944,7 +983,7 @@ def main():
 
                 ax_scat.set_xlabel("Ward deprivation rank (1 = most deprived)")
                 ax_scat.set_ylabel(label_metric)
-                ax_scat.set_title(f"{area_name} – prescribing vs deprivation ({area_label})")
+                ax_scat.set_title(f"{display_name} – prescribing vs deprivation ({area_label})")
                 ax_scat.legend(fontsize=8)
                 fig_scat.tight_layout()
                 st.pyplot(fig_scat)
@@ -955,89 +994,6 @@ def main():
                 tau, p_val = stats.kendalltau(scatter_data["Ward_Dep_Rank"], scatter_data[metric])
                 sig = "***" if p_val < 0.0005 else ("**" if p_val < 0.01 else ("*" if p_val < 0.05 else "ns"))
                 st.caption(f"Kendall's τ = {tau:.3f} (p = {p_val:.4f}) {sig} · Negative τ = higher prescribing in more deprived areas")
-
-            # ── Individual drug scatter ─────────────────────────────────
-            st.divider()
-            st.subheader("Individual drug scatter")
-            st.caption("Select a specific drug to see its prescribing rate vs deprivation across practices.")
-
-            all_drugs = sorted(merged["VTM_NM"].dropna().unique().tolist())
-
-            drug_c1, drug_c2 = st.columns(2)
-            with drug_c1:
-                drug_geo_options = (["All Northern Ireland"]
-                                    + sorted(pc["Trust"].dropna().unique().tolist())
-                                    + sorted(pc["LCG"].dropna().unique().tolist()))
-                drug_geo = st.selectbox("Filter by Trust or LCG",
-                                        drug_geo_options, key="tab_dep_drug_geo")
-            with drug_c2:
-                selected_drug = st.selectbox("Select a drug (VTM name)", all_drugs,
-                                             index=None,
-                                             placeholder="Start typing to search…",
-                                             key="tab_dep_drug_select")
-
-            if selected_drug:
-                drug_filter = lambda df, drug=selected_drug: df[
-                    df["VTM_NM"].str.strip().str.lower() == drug.strip().lower()
-                ]
-                drug_pc = per_cap(merged, drug_filter)
-
-                # Apply geographic filter
-                if drug_geo != "All Northern Ireland":
-                    if drug_geo in pc["Trust"].values:
-                        drug_pc = drug_pc[drug_pc["Trust"] == drug_geo]
-                    elif drug_geo in pc["LCG"].values:
-                        drug_pc = drug_pc[drug_pc["LCG"] == drug_geo]
-
-                if len(drug_pc) < 5:
-                    st.info(f"Too few practices ({len(drug_pc)}) prescribing **{selected_drug}** in {drug_geo}.")
-                elif "Ward_Dep_Rank" not in drug_pc.columns or drug_pc["Ward_Dep_Rank"].isna().all():
-                    st.warning("Deprivation data not available for these practices.")
-                else:
-                    drug_scatter = drug_pc.dropna(subset=["Ward_Dep_Rank", metric])
-
-                    fig_drug, ax_drug = plt.subplots(figsize=(10, 5))
-                    _scatter_by_colour(ax_drug, drug_scatter, metric, colour_by)
-                    _scatter_trend_line(ax_drug, drug_scatter, metric)
-
-                    # Highlight practices from sidebar selection
-                    for pno in highlight_pracnos[:5]:
-                        _scatter_highlight_practice(ax_drug, drug_scatter, metric, pno, pracno_to_label)
-
-                    geo_suffix = f" – {drug_geo}" if drug_geo != "All Northern Ireland" else ""
-                    ax_drug.set_xlabel("Ward deprivation rank (1 = most deprived)")
-                    ax_drug.set_ylabel(label_metric)
-                    ax_drug.set_title(f"{selected_drug} – prescribing vs deprivation{geo_suffix}")
-                    ax_drug.legend(fontsize=8)
-                    fig_drug.tight_layout()
-                    st.pyplot(fig_drug)
-                    plt.close(fig_drug)
-
-                    # Stats
-                    if len(drug_scatter) >= 10:
-                        from scipy import stats as drug_stats
-                        tau_d, p_d = drug_stats.kendalltau(drug_scatter["Ward_Dep_Rank"],
-                                                            drug_scatter[metric])
-                        sig_d = "***" if p_d < 0.0005 else ("**" if p_d < 0.01 else ("*" if p_d < 0.05 else "ns"))
-                        st.caption(
-                            f"Kendall's τ = {tau_d:.3f} (p = {p_d:.4f}) {sig_d} · "
-                            f"{len(drug_scatter)} practices · "
-                            f"Negative τ = higher prescribing in more deprived areas"
-                        )
-
-                    # Quintile summary for this drug
-                    if "DepQuintile" in drug_scatter.columns:
-                        drug_dep = drug_scatter.groupby("DepQuintile").agg(
-                            Practices=("Practice", "nunique"),
-                            MeanRate=(metric, "mean"),
-                        ).reset_index()
-                        drug_dep["Quintile"] = drug_dep["DepQuintile"].astype(int).map(QUINTILE_LABELS_FLAT)
-                        st.dataframe(
-                            drug_dep[["Quintile", "Practices", "MeanRate"]].rename(
-                                columns={"MeanRate": f"Mean {label_metric}"}
-                            ).style.format({f"Mean {label_metric}": "{:.4f}"}),
-                            use_container_width=True,
-                        )
 
             # ── Correlation summary (always NI-wide) ────────────────────
             st.divider()
@@ -1133,11 +1089,11 @@ def main():
                 st.warning("Practice details not found in practice list.")
 
             # Caterpillar chart
-            st.subheader(f"{area_name} – where this practice sits")
+            st.subheader(f"{display_name} – where this practice sits")
             highlight_this = [(selected_pracno, "#e53935")]
             fig_cat = caterpillar_chart(
                 pc, highlight_this,
-                title=f"{area_name} – all NI practices (selected in red)",
+                title=f"{display_name} – all NI practices (selected in red)",
                 metric=metric,
             )
             st.pyplot(fig_cat)
@@ -1257,29 +1213,38 @@ def main():
                     f"{mean_reg:.0f} patients per practice"
                 )
 
-            # Controls row: therapeutic area + colour-by
-            ctrl1, ctrl2 = st.columns(2)
-            with ctrl1:
-                # Suggest a therapeutic area based on the indicator
-                suggested_ta = QOF_SUGGESTED_TA.get(selected_code, "All prescribing")
-                ta_names = list(THERAPEUTIC_AREAS.keys())
-                suggested_idx = ta_names.index(suggested_ta) if suggested_ta in ta_names else 0
-                qof_ta_name = st.selectbox(
-                    "Compare with prescribing area",
-                    ta_names,
-                    index=suggested_idx,
-                    key="tab_qof_ta",
-                )
-            with ctrl2:
+            # Controls row: therapeutic area / individual drug + colour-by
+            # Controls: prescribing area (unless sidebar drug overrides) + colour
+            if not sidebar_drug:
+                ctrl1, ctrl2 = st.columns(2)
+                with ctrl1:
+                    suggested_ta = QOF_SUGGESTED_TA.get(selected_code, "All prescribing")
+                    ta_names = list(THERAPEUTIC_AREAS.keys())
+                    suggested_idx = ta_names.index(suggested_ta) if suggested_ta in ta_names else 0
+                    qof_ta_name = st.selectbox(
+                        "Compare with prescribing area",
+                        ta_names,
+                        index=suggested_idx,
+                        key="tab_qof_ta",
+                    )
+                with ctrl2:
+                    qof_colour_by = st.radio(
+                        "Colour practices by",
+                        ["Deprivation quintile", "LCG"],
+                        horizontal=True,
+                        key="tab_qof_colour_by",
+                    )
+                ta_pc = per_cap_by_name(merged, qof_ta_name)
+                qof_chart_label = qof_ta_name
+            else:
                 qof_colour_by = st.radio(
                     "Colour practices by",
                     ["Deprivation quintile", "LCG"],
                     horizontal=True,
                     key="tab_qof_colour_by",
                 )
-
-            # Get per-capita prescribing for selected therapeutic area
-            ta_pc = per_cap_by_name(merged, qof_ta_name)
+                ta_pc = pc  # already computed from sidebar drug
+                qof_chart_label = sidebar_drug
 
             # Merge prescribing with QOF indicator
             scatter_df = ta_pc.merge(
@@ -1359,7 +1324,7 @@ def main():
                 ax.set_xlabel(f"{selected_code} achievement (%)\n{short_desc}")
                 ax.set_ylabel(label_metric)
                 ax.set_title(
-                    f"{qof_ta_name} prescribing vs {selected_code} achievement"
+                    f"{qof_chart_label} prescribing vs {selected_code} achievement"
                 )
                 ax.legend(fontsize=8, loc="best")
                 fig.tight_layout()
