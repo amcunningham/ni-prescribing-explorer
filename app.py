@@ -367,17 +367,36 @@ def load_data():
 
 
 def per_cap(merged, area_filter):
-    """Compute per-capita items by practice for a therapeutic area."""
+    """Compute per-capita items by practice for a therapeutic area.
+
+    Uses only months where all (or nearly all) practices reported,
+    then divides by the number of complete months to give a monthly average.
+    """
     if area_filter is None:
         df = merged
     else:
         df = area_filter(merged)
+
+    # Identify complete months (those with a reasonable number of practices)
+    if "Month" in df.columns:
+        practices_per_month = df.groupby("Month")["Practice"].nunique()
+        max_practices = practices_per_month.max()
+        # Keep months where at least 80% of practices reported
+        complete_months = practices_per_month[practices_per_month >= max_practices * 0.8].index
+        if len(complete_months) > 0:
+            df = df[df["Month"].isin(complete_months)]
+        n_months = len(complete_months) if len(complete_months) > 0 else 1
+    else:
+        n_months = 1
 
     agg = (
         df.groupby(["Practice", "PracticeName", "LCG", "Trust", "RegisteredPatients"])
         .agg(TotalItems=("TotalItems", "sum"), TotalCost=("ActualCost", "sum"))
         .reset_index()
     )
+    # Monthly average per capita
+    agg["TotalItems"] = agg["TotalItems"] / n_months
+    agg["TotalCost"] = agg["TotalCost"] / n_months
     agg["ItemsPerCapita"] = agg["TotalItems"] / agg["RegisteredPatients"]
     agg["CostPerCapita"] = agg["TotalCost"] / agg["RegisteredPatients"]
     return agg.sort_values("ItemsPerCapita", ascending=False)
@@ -510,12 +529,25 @@ def main():
             st.error(f"Failed to download data: {e}")
             return
 
-    # Show data period
-    months_in_data = ""
-    if "Month" in merged.columns:
-        months = sorted(merged["Month"].dropna().unique())
-        if len(months):
-            months_in_data = f" ({', '.join(str(m) for m in months)})"
+    # Show data period and flag incomplete months
+    import calendar as cal_mod
+    if "Month" in merged.columns and "Year" in merged.columns:
+        practices_per_month = merged.groupby(["Year", "Month"])["Practice"].nunique().reset_index()
+        practices_per_month.columns = ["Year", "Month", "Practices"]
+        max_prac = practices_per_month["Practices"].max()
+
+        parts = []
+        used_months = []
+        for _, row in practices_per_month.sort_values(["Year", "Month"]).iterrows():
+            y, mo, n = int(row["Year"]), int(row["Month"]), int(row["Practices"])
+            label = f"{cal_mod.month_abbr[mo]} {y}"
+            if n < max_prac * 0.8:
+                label += f" ⚠️ incomplete ({n} practices)"
+            else:
+                used_months.append(label)
+            parts.append(label)
+
+        st.caption(f"Data period: **{', '.join(parts)}** · Figures shown as monthly average using {len(used_months)} complete month{'s' if len(used_months) != 1 else ''}")
 
     # ── sidebar ─────────────────────────────────────────────────────────
     st.sidebar.header("Filters")
