@@ -389,8 +389,13 @@ def per_cap(merged, area_filter):
     else:
         n_months = 1
 
+    group_cols = ["Practice", "PracticeName", "LCG", "Trust", "RegisteredPatients"]
+    if "DepQuintile" in df.columns:
+        group_cols.append("DepQuintile")
+    if "Ward_Dep_Rank" in df.columns:
+        group_cols.append("Ward_Dep_Rank")
     agg = (
-        df.groupby(["Practice", "PracticeName", "LCG", "Trust", "RegisteredPatients"])
+        df.groupby(group_cols)
         .agg(TotalItems=("TotalItems", "sum"), TotalCost=("ActualCost", "sum"))
         .reset_index()
     )
@@ -611,7 +616,7 @@ def main():
     # Convert labels back to practice numbers for internal use
     highlight_pracnos = [label_to_pracno.get(l, l) for l in highlight_labels]
 
-    view_level = st.sidebar.radio("View level", ["NI overview", "By Trust / LCG", "Practice deep-dive"])
+    view_level = st.sidebar.radio("View level", ["NI overview", "By Trust / LCG", "By deprivation", "Practice deep-dive"])
 
     # Data management
     st.sidebar.divider()
@@ -712,6 +717,101 @@ def main():
         st.pyplot(fig2)
         plt.close(fig2)
 
+    # ── Deprivation view ─────────────────────────────────────────────────
+    elif view_level == "By deprivation":
+        st.header(f"{area_name} – by deprivation")
+        st.caption("Deprivation quintiles based on NIMDM 2017 ward-level scores (1 = most deprived, 5 = least deprived)")
+
+        has_dep = "DepQuintile" in pc.columns and pc["DepQuintile"].notna().any()
+        if not has_dep:
+            st.warning("Deprivation data not available. Refresh data to include NIMDM linkage.")
+        else:
+            # Bar chart: mean prescribing rate by quintile
+            dep_summary = pc.dropna(subset=["DepQuintile"]).groupby("DepQuintile").agg(
+                Practices=("Practice", "nunique"),
+                MeanRate=(metric, "mean"),
+                MedianRate=(metric, "median"),
+                TotalItems=("TotalItems", "sum"),
+                TotalCost=("TotalCost", "sum"),
+                Patients=("RegisteredPatients", "sum"),
+            ).reset_index()
+            dep_summary["DepQuintile"] = dep_summary["DepQuintile"].astype(int)
+
+            quintile_labels = {1: "Q1\nMost deprived", 2: "Q2", 3: "Q3", 4: "Q4", 5: "Q5\nLeast deprived"}
+            dep_summary["Label"] = dep_summary["DepQuintile"].map(quintile_labels)
+
+            fig_dep, ax_dep = plt.subplots(figsize=(8, 4.5))
+            colours_dep = ["#d32f2f", "#f57c00", "#fbc02d", "#66bb6a", "#1e88e5"]
+            ax_dep.bar(dep_summary["Label"], dep_summary["MeanRate"], color=colours_dep, edgecolor="white")
+            ni_mean_line = pc[metric].mean()
+            ax_dep.axhline(ni_mean_line, color="#333", linewidth=1.2, linestyle="--", label=f"NI mean: {ni_mean_line:.2f}")
+            label_metric = "Items per patient" if metric == "ItemsPerCapita" else "Cost (£) per patient"
+            ax_dep.set_ylabel(label_metric)
+            ax_dep.set_title(f"{area_name} – mean {label_metric.lower()} by deprivation quintile")
+            ax_dep.legend()
+            fig_dep.tight_layout()
+            st.pyplot(fig_dep)
+            plt.close(fig_dep)
+
+            # Ratio
+            q1_mean = dep_summary[dep_summary["DepQuintile"] == 1]["MeanRate"].values[0]
+            q5_mean = dep_summary[dep_summary["DepQuintile"] == 5]["MeanRate"].values[0]
+            if q5_mean > 0:
+                ratio = q1_mean / q5_mean
+                st.metric(
+                    "Q1:Q5 ratio (most vs least deprived)",
+                    f"{ratio:.2f}",
+                    help="Ratio of mean prescribing rate in most deprived quintile to least deprived. >1 means higher prescribing in deprived areas."
+                )
+
+            # Summary table
+            st.subheader("Quintile summary")
+            display_dep = dep_summary[["Label", "Practices", "Patients", "MeanRate", "MedianRate", "TotalItems", "TotalCost"]].copy()
+            display_dep.columns = ["Quintile", "Practices", "Patients", f"Mean {label_metric}", f"Median {label_metric}", "Total items", "Total cost"]
+            st.dataframe(
+                display_dep.style.format({
+                    "Patients": "{:,.0f}",
+                    f"Mean {label_metric}": "{:.3f}",
+                    f"Median {label_metric}": "{:.3f}",
+                    "Total items": "{:,.0f}",
+                    "Total cost": "£{:,.0f}",
+                }),
+                use_container_width=True,
+            )
+
+            # Scatter: deprivation rank vs prescribing rate
+            st.subheader("Practice-level scatter")
+            fig_scat, ax_scat = plt.subplots(figsize=(10, 5))
+            if "Ward_Dep_Rank" in pc.columns:
+                scatter_data = pc.dropna(subset=["Ward_Dep_Rank", metric])
+                # Colour by quintile
+                for q in sorted(scatter_data["DepQuintile"].dropna().unique()):
+                    qd = scatter_data[scatter_data["DepQuintile"] == q]
+                    ax_scat.scatter(qd["Ward_Dep_Rank"], qd[metric],
+                                    color=colours_dep[int(q)-1], alpha=0.6, s=30,
+                                    label=quintile_labels.get(int(q), f"Q{int(q)}"))
+                # Trend line
+                from numpy.polynomial.polynomial import polyfit
+                x = scatter_data["Ward_Dep_Rank"].values
+                y = scatter_data[metric].values
+                b, m_coef = polyfit(x, y, 1)
+                x_line = np.linspace(x.min(), x.max(), 100)
+                ax_scat.plot(x_line, b + m_coef * x_line, color="#333", linewidth=1.5, linestyle="--")
+
+                ax_scat.set_xlabel("Ward deprivation rank (1 = most deprived)")
+                ax_scat.set_ylabel(label_metric)
+                ax_scat.set_title(f"{area_name} – prescribing vs deprivation")
+                ax_scat.legend(fontsize=8)
+                fig_scat.tight_layout()
+                st.pyplot(fig_scat)
+                plt.close(fig_scat)
+
+                # Correlation stat
+                from scipy import stats
+                tau, p_val = stats.kendalltau(scatter_data["Ward_Dep_Rank"], scatter_data[metric])
+                sig = "***" if p_val < 0.0005 else ("**" if p_val < 0.01 else ("*" if p_val < 0.05 else "ns"))
+                st.caption(f"Kendall's τ = {tau:.3f} (p = {p_val:.4f}) {sig} · Negative τ = higher prescribing in more deprived areas")
+
     # ── Practice deep-dive ──────────────────────────────────────────────
     elif view_level == "Practice deep-dive":
         st.header("Practice deep-dive")
@@ -725,10 +825,15 @@ def main():
             prac_matches = practices[practices["PracNo"].str.strip() == str(selected_pracno).strip()]
             if not prac_matches.empty:
                 prac_row = prac_matches.iloc[0]
-                c1, c2, c3 = st.columns(3)
+                dep_q = prac_row.get("DepQuintile", None)
+                dep_label = {1: "Q1 (most deprived)", 2: "Q2", 3: "Q3", 4: "Q4", 5: "Q5 (least deprived)"}.get(
+                    int(dep_q) if pd.notna(dep_q) else None, "—"
+                )
+                c1, c2, c3, c4 = st.columns(4)
                 c1.metric("LCG", prac_row.get("LCG", "—"))
                 c2.metric("Trust", prac_row.get("Trust", "—"))
                 c3.metric("Registered patients", f"{int(prac_row.get('RegisteredPatients', 0)):,}")
+                c4.metric("Deprivation", dep_label)
             else:
                 st.warning("Practice details not found in practice list.")
 
