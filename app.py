@@ -98,6 +98,27 @@ THERAPEUTIC_AREAS = {
         )],
         "description": "Non-insulin glucose-lowering agents (NICE NG28)",
     },
+    "SGLT2 inhibitors": {
+        "filter": lambda df: df[df["VTM_NM"].str.contains(
+            "dapagliflozin|empagliflozin|canagliflozin|ertugliflozin",
+            case=False, na=False
+        )],
+        "description": "Sodium-glucose co-transporter 2 inhibitors – CV and renal benefits beyond glycaemic control (NICE NG28, TA775, TA877)",
+    },
+    "GLP-1 receptor agonists": {
+        "filter": lambda df: df[df["VTM_NM"].str.contains(
+            "semaglutide|liraglutide|dulaglutide|exenatide|lixisenatide",
+            case=False, na=False
+        )],
+        "description": "GLP-1 RAs – CV benefit, weight management; supply constraints apply (NICE NG28)",
+    },
+    "DPP-4 inhibitors": {
+        "filter": lambda df: df[df["VTM_NM"].str.contains(
+            "sitagliptin|linagliptin|saxagliptin|alogliptin|vildagliptin",
+            case=False, na=False
+        )],
+        "description": "Dipeptidyl peptidase-4 inhibitors – consider stepping down to SGLT2i or GLP-1 RA where appropriate (NICE NG28)",
+    },
 }
 
 
