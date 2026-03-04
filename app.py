@@ -68,12 +68,12 @@ THERAPEUTIC_AREAS = {
         )],
         "description": "Antibiotics commonly used for urinary tract infections (NICE NG109)",
     },
-    "Antidepressants": {
+    "Antidepressants (excl. TCAs)": {
         "filter": lambda df: df[df["VTM_NM"].str.contains(
-            "sertraline|citalopram|fluoxetine|mirtazapine|venlafaxine|duloxetine|amitriptyline|paroxetine|escitalopram|trazodone|dosulepin|nortriptyline|clomipramine|imipramine|lofepramine",
+            "sertraline|citalopram|fluoxetine|mirtazapine|venlafaxine|duloxetine|paroxetine|escitalopram|trazodone",
             case=False, na=False
         )],
-        "description": "SSRIs, SNRIs, TCAs and other antidepressants (NICE CG90)",
+        "description": "SSRIs, SNRIs and mirtazapine — excludes TCAs which are widely prescribed for pain/migraine (NICE CG90)",
     },
     "Gabapentinoids": {
         "filter": lambda df: df[df["VTM_NM"].str.contains("gabapentin|pregabalin", case=False, na=False)],
@@ -81,10 +81,10 @@ THERAPEUTIC_AREAS = {
     },
     "Opioids": {
         "filter": lambda df: df[df["VTM_NM"].str.contains(
-            "morphine|codeine|tramadol|oxycodone|fentanyl|buprenorphine|dihydrocodeine|co-codamol|co-dydramol|tapentadol|methadone|pethidine",
+            "morphine|codeine|tramadol|oxycodone|fentanyl|buprenorphine|dihydrocodeine|co-codamol|co-dydramol|tapentadol|pethidine",
             case=False, na=False
         )],
-        "description": "Opioid analgesics (NICE NG193 – chronic primary pain)",
+        "description": "Opioid analgesics — excludes methadone (mostly opioid substitution therapy) (NICE NG193)",
     },
     "PPIs": {
         "filter": lambda df: df[df["VTM_NM"].str.contains(
@@ -586,11 +586,11 @@ QOF_SUGGESTED_TA = {
     "AST003": "All prescribing",
     "COPD003": "All prescribing",
     "COPD005NI": "All prescribing",
-    "MH002": "Antidepressants",
-    "MH003": "Antidepressants",
-    "MH007": "Antidepressants",
-    "MH0011NI": "Antidepressants",
-    "MH0012NI": "Antidepressants",
+    "MH002": "Antidepressants (excl. TCAs)",
+    "MH003": "Antidepressants (excl. TCAs)",
+    "MH007": "Antidepressants (excl. TCAs)",
+    "MH0011NI": "Antidepressants (excl. TCAs)",
+    "MH0012NI": "Antidepressants (excl. TCAs)",
     "HF003": "All prescribing",
     "HF004": "All prescribing",
     "STIA005NI": "Statins",
@@ -786,6 +786,17 @@ def main():
         st.cache_data.clear()
         st.rerun()
 
+    with st.sidebar.expander("About this dashboard"):
+        st.markdown(
+            "Explores variation in GP prescribing across Northern Ireland "
+            "practices, linked to deprivation and QOF clinical outcomes.\n\n"
+            "**Data sources:** OpenDataNI prescribing data, QOF Clinical "
+            "Achievement Statistics 2022/23, April 2023 practice list sizes.\n\n"
+            "Drug groupings are based on NICE/BNF guidance with some "
+            "deliberate exclusions — see the **About** tab for full details "
+            "and rationale."
+        )
+
     # ── compute per-capita ──────────────────────────────────────────────
     if sidebar_drug:
         drug_filter = lambda df, drug=sidebar_drug: df[
@@ -808,9 +819,16 @@ def main():
     tab_names = ["Northern Ireland", "Trust / LCG", "Deprivation", "Practice"]
     if qof_df is not None or prev_df is not None:
         tab_names.append("QOF / Prevalence")
+    tab_names.append("About")
     tabs = st.tabs(tab_names)
     tab_ni, tab_area, tab_dep, tab_prac = tabs[0], tabs[1], tabs[2], tabs[3]
-    tab_qof = tabs[4] if (qof_df is not None or prev_df is not None) else None
+    _next_idx = 4
+    if qof_df is not None or prev_df is not None:
+        tab_qof = tabs[_next_idx]
+        _next_idx += 1
+    else:
+        tab_qof = None
+    tab_about = tabs[_next_idx]
 
     # ── TAB 1: Northern Ireland overview ────────────────────────────────
     with tab_ni:
@@ -1532,6 +1550,135 @@ def main():
                         use_container_width=True,
                         hide_index=True,
                     )
+
+
+    # ── TAB: About ──────────────────────────────────────────────────────
+    with tab_about:
+        st.header("About this dashboard")
+
+        st.markdown("""
+This dashboard explores variation in GP prescribing across Northern Ireland
+practices. It links prescribing data to practice-level deprivation and
+QOF (Quality and Outcomes Framework) clinical achievement statistics.
+
+### Data sources
+
+| Source | Period | Licence |
+|--------|--------|---------|
+| GP Prescribing Data | 2025 (latest months from OpenDataNI) | Open Government Licence |
+| GP Practice List Sizes | April 2023 reference file | Open Government Licence |
+| QOF Clinical Achievement | 2022/23 | HSCB |
+| NI Multiple Deprivation Measure | 2017 | NISRA |
+
+### How prescribing rates are calculated
+
+For each practice, prescribing is expressed as **items per registered patient
+per month** (or cost per patient per month). Only months where at least 80%
+of practices reported data are included, and the total is divided by the
+number of complete months to give a monthly average. This controls for
+practices that may be missing from individual months' data.
+
+### Therapeutic area drug groupings
+
+The drug lists below are based on NICE and BNF guidance. Some deliberate
+exclusions are made where a drug has major indications outside the
+therapeutic area, which would distort practice-level comparisons.
+""")
+
+        # Dynamically generate drug list documentation from THERAPEUTIC_AREAS
+        for ta_name, ta_info in THERAPEUTIC_AREAS.items():
+            if ta_name == "All prescribing":
+                continue
+            desc = ta_info["description"]
+            filt = ta_info["filter"]
+            # Extract the drug names from the regex pattern in the lambda
+            if filt is not None:
+                import inspect
+                src = inspect.getsource(filt)
+                # Pull out the regex string between the first pair of quotes
+                import re as _re
+                match = _re.search(r'"([^"]+)"', src)
+                if match:
+                    drugs_regex = match.group(1)
+                    drug_list = [d.strip() for d in drugs_regex.split("|")]
+                    drug_list_str = ", ".join(drug_list)
+                else:
+                    drug_list_str = "(filter defined programmatically)"
+            else:
+                drug_list_str = "All items"
+
+            st.markdown(f"**{ta_name}**")
+            st.caption(desc)
+            st.markdown(f"Drugs included: {drug_list_str}")
+            st.markdown("")
+
+        st.markdown("""
+### Key exclusions and rationale
+
+- **Antidepressants (excl. TCAs):** Tricyclic antidepressants (amitriptyline,
+  nortriptyline, dosulepin, clomipramine, imipramine, lofepramine) are excluded
+  because in primary care they are predominantly prescribed for neuropathic pain
+  and migraine prophylaxis rather than depression. Including them would
+  overcount antidepressant prescribing in practices with high pain caseloads.
+  Dosulepin is also no longer recommended for initiation by NICE.
+
+- **Opioids (excl. methadone):** Methadone is excluded because it is
+  predominantly prescribed for opioid substitution therapy rather than pain
+  management. Practices running substance misuse clinics would otherwise appear
+  as very high opioid prescribers, distorting comparisons.
+
+- **Antihypertensives:** Spironolactone is excluded despite being NICE NG136
+  step 4 for resistant hypertension, because it has major indications in heart
+  failure, primary aldosteronism and other conditions. Beta-blockers are
+  excluded as they are no longer first-line for hypertension (NICE NG136) and
+  have large overlap with angina, heart failure and rate control in AF.
+
+- **UTI antibiotics:** This category captures antibiotics commonly used for
+  UTIs, but several (ciprofloxacin, co-amoxiclav, amoxicillin) have broad
+  indications beyond UTIs. The category is best interpreted as
+  "antibiotics that include UTI among their common uses" rather than
+  UTI-specific prescribing.
+
+### Disease prevalence
+
+Disease prevalence is estimated from QOF register sizes (2022/23) divided by
+April 2023 registered patient counts. For each disease domain, the QOF
+indicator with the largest denominator is used as the best proxy for the full
+disease register. The exception is CKD, where CKD006NI is used rather than
+CKD005NI (whose denominator is the total adult population, not CKD patients).
+
+### Deprivation
+
+Practice-level deprivation is based on the NI Multiple Deprivation Measure
+2017, mapped at ward level. Quintile 1 = most deprived, Quintile 5 = least
+deprived.
+
+### Practice names
+
+Practices are identified by their surgery or clinic name (Address1 field from
+the April 2023 reference file) rather than the senior partner's name, because
+partner names change frequently — 98 of 305 practices had different partner
+names between the 2023 and 2025 datasets.
+
+### Limitations
+
+- Prescribing data is from 2025; QOF and prevalence data is from 2022/23.
+  Practices that closed between these dates (13 practices) are excluded from
+  QOF/prevalence analyses.
+- Prevalence estimates are approximate — they use QOF indicator denominators
+  as proxies for disease registers, which exclude exception-reported patients.
+- Deprivation is assigned at ward level and may not reflect within-ward
+  variation or the actual deprivation profile of a practice's registered
+  population.
+- The "individual drug" search matches on VTM (Virtual Therapeutic Moiety)
+  name, which groups all formulations and strengths of a drug together.
+""")
+
+        st.markdown("---")
+        st.caption(
+            "Built by Anne Marie Cunningham with AI assistance (Claude, Anthropic). "
+            "Source code on [GitHub](https://github.com/amcunningham/ni-prescribing-explorer)."
+        )
 
 
 if __name__ == "__main__":
