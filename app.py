@@ -567,43 +567,6 @@ DEP_COLOURS = {1: "#d32f2f", 2: "#f57c00", 3: "#fbc02d", 4: "#66bb6a", 5: "#1e88
 QUINTILE_LABELS = {1: "Q1\nMost deprived", 2: "Q2", 3: "Q3", 4: "Q4", 5: "Q5\nLeast deprived"}
 QUINTILE_LABELS_FLAT = {1: "Q1 (most deprived)", 2: "Q2", 3: "Q3", 4: "Q4", 5: "Q5 (least deprived)"}
 
-# ── QOF: suggested therapeutic area per indicator ──────────────────────
-# When a user picks a QOF indicator, suggest the most clinically relevant
-# therapeutic area to plot against (user can override).
-QOF_SUGGESTED_TA = {
-    "DM008": "Diabetes (non-insulin)",
-    "DM009": "Diabetes (non-insulin)",
-    "DM006": "Diabetes (non-insulin)",
-    "DM012": "Diabetes (non-insulin)",
-    "DM022NI": "Statins",
-    "DM023NI": "Statins",
-    "DM024NI": "Antihypertensives",
-    "CHD002": "Antihypertensives",
-    "CHD003NI": "Statins",
-    "CHD005": "Anticoagulants (oral)",
-    "HYP003NI": "Antihypertensives",
-    "HYP007": "Antihypertensives",
-    "AST003": "All prescribing",
-    "COPD003": "All prescribing",
-    "COPD005NI": "All prescribing",
-    "MH002": "Antidepressants (excl. TCAs)",
-    "MH003": "Antidepressants (excl. TCAs)",
-    "MH007": "Antidepressants (excl. TCAs)",
-    "MH0011NI": "Antidepressants (excl. TCAs)",
-    "MH0012NI": "Antidepressants (excl. TCAs)",
-    "HF003": "All prescribing",
-    "HF004": "All prescribing",
-    "STIA005NI": "Statins",
-    "STIA007": "Anticoagulants (oral)",
-    "STIA010NI": "Antihypertensives",
-    "STIA011NI": "Antihypertensives",
-    "AF007": "Anticoagulants (oral)",
-    "AFOO6NI": "Anticoagulants (oral)",
-    "CKD006NI": "Antihypertensives",
-    "CKD007NI": "Antihypertensives",
-}
-
-
 def _scatter_by_colour(ax, data, metric, colour_by):
     """Plot scatter points coloured by deprivation quintile or LCG."""
     if colour_by == "LCG":
