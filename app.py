@@ -1528,18 +1528,47 @@ QOF (Quality and Outcomes Framework) clinical achievement statistics.
 
 | Source | Period | Licence |
 |--------|--------|---------|
-| GP Prescribing Data | 2025 (latest months from OpenDataNI) | Open Government Licence |
+| GP Prescribing Data | April 2013 – January 2026 (154 monthly files from OpenDataNI) | Open Government Licence |
 | GP Practice List Sizes | April 2023 reference file | Open Government Licence |
 | QOF Clinical Achievement | 2022/23 | HSCB |
 | NI Multiple Deprivation Measure | 2017 | NISRA |
+| STAR-PU 2023 Weightings | Published November 2024 (DoH NI ref PFR2024_02) | DoH NI |
+| Registered Patients by Practice, Gender & Age Group | 2014–2025 | BSO |
+| GMS Statistics Annual Tables (LCG-level demographics) | 2014–2025 | BSO |
 
 ### How prescribing rates are calculated
 
-For each practice, prescribing is expressed as **items per registered patient
-per month** (or cost per patient per month). Only months where at least 80%
-of practices reported data are included, and the total is divided by the
-number of complete months to give a monthly average. This controls for
-practices that may be missing from individual months' data.
+Two measures of prescribing rate are available:
+
+**1. Items per registered patient (raw rate):** For each practice,
+prescribing is expressed as items per registered patient per month
+(or cost per patient per month). Only months where at least 80% of
+practices reported data are included. This simple per-capita measure
+does not account for differences in age and sex structure between practices.
+
+**2. Items per STAR-PU (age-sex standardised rate):** STAR-PU (Specific
+Therapeutic Group Age-Sex Related Prescribing Units) adjusts for the
+expected level of prescribing given a practice's or area's age-sex
+profile. The NI-specific 2023 STAR-PU weightings (DoH NI, November 2024)
+assign different weights to each age-sex band for each BNF chapter,
+reflecting how much prescribing is typically needed. For example, a
+practice with many elderly patients will have a higher STAR-PU denominator,
+so its standardised rate reflects prescribing *relative to what is
+expected* for its population mix.
+
+STAR-PU weights are available for 10 BNF chapters (1: GI, 2: Cardiovascular,
+3: Respiratory, 4: CNS, 5: Infections, 6: Endocrine, 7: Obs/Gynae/UT,
+9: Nutrition, 10: MSK, 13: Skin) and 24 BNF sections/paragraphs
+(including PPIs, statins, antihypertensives, antidepressants, analgesics,
+antibiotics, diabetes drugs, and NSAIDs).
+
+**Age-band mapping:** The STAR-PU weightings use 9 age bands per sex
+(0–4, 5–15, 16–24, 25–44, 45–59, 60–64, 65–74, 75–84, 85+). At LCG
+level, demographics are available in 7 bands — five match exactly, and
+two combined bands (16–44, 45–64) are resolved using NI population-weighted
+averages of the sub-band weights. At practice level, only 4 age bands
+are available (<18, 18–44, 45–64, 65+), requiring coarser aggregation.
+The LCG-level standardisation is therefore more precise.
 
 ### Therapeutic area drug groupings
 
@@ -1613,8 +1642,37 @@ CKD005NI (whose denominator is the total adult population, not CKD patients).
 ### Deprivation
 
 Practice-level deprivation is based on the NI Multiple Deprivation Measure
-2017, mapped at ward level. Quintile 1 = most deprived, Quintile 5 = least
-deprived.
+2017, mapped at ward level using the practice postcode. Quintile 1 = most
+deprived, Quintile 5 = least deprived.
+
+**Important caveats about the deprivation measure:**
+
+- **Ecological assignment:** Deprivation is assigned based on the ward
+  containing the practice *postcode* (i.e. the surgery location), not the
+  actual deprivation profile of the registered patient population. Patients
+  frequently cross ward boundaries, so a practice in a moderately deprived
+  ward may serve many patients from more or less deprived surrounding areas.
+  This is a well-recognised limitation of ecological deprivation measures.
+
+- **Compressed rank range:** GP practices in NI span ward deprivation ranks
+  1–178 out of 462 wards. The most affluent 62% of wards have no GP
+  practice postcode assigned to them (because practices tend to be located
+  in town centres and health centres rather than residential areas). The
+  quintile labels therefore represent divisions within the more deprived
+  end of the spectrum, not the full range of NI deprivation.
+
+- **Belfast effect:** Belfast has high practice density, and practices in
+  "moderate deprivation" wards often serve mixed catchments including
+  nearby deprived areas. This is particularly visible in quintile 4, which
+  has a disproportionate share of Belfast practices and shows higher
+  prescribing than expected from its nominal deprivation level.
+
+- **Age-sex standardisation steepens the gradient:** When prescribing rates
+  are standardised using STAR-PU, the deprivation gradient becomes steeper
+  (not flatter). This is because less deprived areas tend to have older
+  populations, which inflates their raw per-capita rates. After adjusting
+  for expected prescribing given the age-sex mix, the more deprived areas
+  stand out even more clearly as prescribing above expectation.
 
 ### Practice names
 
@@ -1625,16 +1683,25 @@ names between the 2023 and 2025 datasets.
 
 ### Limitations
 
-- Prescribing data is from 2025; QOF and prevalence data is from 2022/23.
-  Practices that closed between these dates (13 practices) are excluded from
-  QOF/prevalence analyses.
+- Prescribing data spans April 2013 to January 2026; QOF and prevalence
+  data is from 2022/23. Practices that closed between these dates (13
+  practices) are excluded from QOF/prevalence analyses.
 - Prevalence estimates are approximate — they use QOF indicator denominators
   as proxies for disease registers, which exclude exception-reported patients.
-- Deprivation is assigned at ward level and may not reflect within-ward
-  variation or the actual deprivation profile of a practice's registered
-  population.
+- Deprivation is assigned at ward level based on the practice postcode and
+  may not reflect the actual deprivation profile of a practice's registered
+  population (see Deprivation section above for details).
 - The "individual drug" search matches on VTM (Virtual Therapeutic Moiety)
   name, which groups all formulations and strengths of a drug together.
+- STAR-PU standardisation uses a single set of 2023 weightings applied to
+  all years. Prescribing patterns by age-sex group may have shifted over
+  the 2013–2026 period, but the same weights provide a consistent standard
+  for comparison.
+- Practice-level demographics use 4 coarse age bands (<18, 18–44, 45–64,
+  65+) which require aggregation of the 9 finer STAR-PU age bands.
+  LCG-level demographics use 7 bands and give more precise standardisation.
+- For April 2013 – March 2014, the 2014 demographic data is used as the
+  denominator. For January 2026, the 2025 demographics are carried forward.
 """)
 
         st.markdown("---")
