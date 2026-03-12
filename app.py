@@ -1648,6 +1648,20 @@ def main():
             )
             use_starpu = "Standardised" in ts_rate
 
+        ts_col4, _ = st.columns([1, 2])
+        with ts_col4:
+            smoothing = st.selectbox(
+                "Smoothing",
+                ["Monthly (raw)", "3-month rolling average", "12-month rolling average"],
+                index=2,
+                key="ts_smoothing",
+            )
+        smooth_window = 1
+        if "3-month" in smoothing:
+            smooth_window = 3
+        elif "12-month" in smoothing:
+            smooth_window = 12
+
         # ── Filter and aggregate data ──
         if selected_chapter == 0:
             # Aggregate across all chapters
@@ -1708,7 +1722,12 @@ def main():
         # ── Chart 1: NI-wide trend ──
         st.subheader(f"Northern Ireland – {chapter_title}")
         fig1, ax1 = plt.subplots(figsize=(12, 4))
-        ax1.plot(ni_data["date"], ni_data["rate"], color="#2563eb", linewidth=1.5)
+        if smooth_window > 1:
+            ni_data["rate_smooth"] = ni_data["rate"].rolling(window=smooth_window, min_periods=smooth_window).mean()
+            ax1.plot(ni_data["date"], ni_data["rate"], color="#2563eb", linewidth=0.4, alpha=0.3)
+            ax1.plot(ni_data["date"], ni_data["rate_smooth"], color="#2563eb", linewidth=2)
+        else:
+            ax1.plot(ni_data["date"], ni_data["rate"], color="#2563eb", linewidth=1.5)
         ax1.set_ylabel(rate_label, fontsize=10)
         ax1.set_xlabel("")
         ax1.grid(axis="y", alpha=0.3)
@@ -1737,8 +1756,15 @@ def main():
         for lcg_name in sorted(lcg_data["lcg"].unique()):
             lcg_subset = lcg_data[lcg_data["lcg"] == lcg_name].sort_values("date")
             colour = lcg_colours.get(lcg_name, "#666666")
-            ax2.plot(lcg_subset["date"], lcg_subset["rate"],
-                     label=lcg_name, color=colour, linewidth=1.2, alpha=0.85)
+            if smooth_window > 1:
+                lcg_subset = lcg_subset.copy()
+                lcg_subset["rate_smooth"] = lcg_subset["rate"].rolling(window=smooth_window, min_periods=smooth_window).mean()
+                ax2.plot(lcg_subset["date"], lcg_subset["rate"], color=colour, linewidth=0.3, alpha=0.15)
+                ax2.plot(lcg_subset["date"], lcg_subset["rate_smooth"],
+                         label=lcg_name, color=colour, linewidth=1.8, alpha=0.9)
+            else:
+                ax2.plot(lcg_subset["date"], lcg_subset["rate"],
+                         label=lcg_name, color=colour, linewidth=1.2, alpha=0.85)
 
         ax2.set_ylabel(rate_label, fontsize=10)
         ax2.set_xlabel("")
@@ -1790,8 +1816,14 @@ def main():
                     # Truncate long labels
                     if len(label) > 40:
                         label = label[:37] + "…"
-                    ax3.plot(prac_subset["date"], prac_subset["rate"],
-                             label=label, color=colours3[idx], linewidth=1.2)
+                    if smooth_window > 1:
+                        prac_subset["rate_smooth"] = prac_subset["rate"].rolling(window=smooth_window, min_periods=smooth_window).mean()
+                        ax3.plot(prac_subset["date"], prac_subset["rate"], color=colours3[idx], linewidth=0.3, alpha=0.15)
+                        ax3.plot(prac_subset["date"], prac_subset["rate_smooth"],
+                                 label=label, color=colours3[idx], linewidth=1.8)
+                    else:
+                        ax3.plot(prac_subset["date"], prac_subset["rate"],
+                                 label=label, color=colours3[idx], linewidth=1.2)
 
                 rate_label_prac = rate_label
                 if not use_starpu:
