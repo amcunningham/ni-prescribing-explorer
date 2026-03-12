@@ -1754,25 +1754,13 @@ def main():
         # ── Chart 3: Practice-level detail (optional) ──
         if ts_practice is not None:
             st.subheader("Practice-level trends")
-            st.caption("Select practices to compare their prescribing trends over time.")
+            if highlight_pracnos:
+                st.caption("Showing practices selected in the sidebar under 'Highlight practices'.")
+            else:
+                st.caption("Use the **Highlight practices** selector in the sidebar to pick practices to compare here.")
 
-            # Build practice selector using existing practices dataframe
-            prac_labels_ts = {}
-            if "practices" in dir() or practices is not None:
-                for _, row in practices.iterrows():
-                    pno = str(row["PracNo"]).strip()
-                    pname = row.get("_label", row.get("PracticeName", pno))
-                    prac_labels_ts[pname] = int(pno) if pno.isdigit() else pno
-
-            selected_prac_labels = st.multiselect(
-                "Select practices to compare",
-                sorted(prac_labels_ts.keys()),
-                max_selections=8,
-                key="ts_practice_select",
-            )
-
-            if selected_prac_labels:
-                selected_prac_nos = [prac_labels_ts[lbl] for lbl in selected_prac_labels]
+            if highlight_pracnos:
+                selected_prac_nos = [int(p) if str(p).isdigit() else p for p in highlight_pracnos]
 
                 fig3, ax3 = plt.subplots(figsize=(12, 5))
                 colours3 = plt.cm.Set1(np.linspace(0, 1, max(len(selected_prac_nos), 8)))
@@ -1798,7 +1786,7 @@ def main():
                             prac_subset = prac_subset.copy()
                             prac_subset["rate"] = prac_subset["total_cost"] / prac_subset["total_population"]
 
-                    label = selected_prac_labels[idx]
+                    label = pracno_to_label.get(str(pno), str(pno))
                     # Truncate long labels
                     if len(label) > 40:
                         label = label[:37] + "…"
