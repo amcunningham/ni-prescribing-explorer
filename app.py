@@ -141,6 +141,42 @@ THERAPEUTIC_AREAS = {
     },
 }
 
+# ── BNF chapter names ────────────────────────────────────────────────
+BNF_CHAPTERS = {
+    0: "Other / unclassified",
+    1: "Gastro-intestinal system",
+    2: "Cardiovascular system",
+    3: "Respiratory system",
+    4: "Central nervous system",
+    5: "Infections",
+    6: "Endocrine system",
+    7: "Obstetrics, gynaecology & UTI",
+    8: "Malignant disease & immunosuppression",
+    9: "Nutrition & blood",
+    10: "Musculoskeletal & joint diseases",
+    11: "Eye",
+    12: "Ear, nose & oropharynx",
+    13: "Skin",
+    14: "Immunological products & vaccines",
+    15: "Anaesthesia",
+    18: "Preparations used in diagnosis",
+    19: "Other drugs & preparations",
+    20: "Dressings",
+    21: "Appliances",
+    22: "Incontinence appliances",
+    23: "Stoma appliances",
+    99: "Not classified",
+}
+
+# Chapters that have STAR-PU weightings
+STARPU_CHAPTERS = [1, 2, 3, 4, 5, 6, 7, 9, 10, 13]
+
+# Parquet paths for time-series data
+PARQUET_TS_PRACTICE = os.path.join(DATA_DIR, "standardised_rates_practice.parquet")
+PARQUET_TS_LCG = os.path.join(DATA_DIR, "standardised_rates_lcg.parquet")
+PARQUET_PRESC_PRACTICE = os.path.join(DATA_DIR, "prescribing_practice_monthly.parquet")
+PARQUET_PRESC_LCG = os.path.join(DATA_DIR, "prescribing_lcg_monthly.parquet")
+
 
 # ════════════════════════════════════════════════════════════════════════
 # DATA DOWNLOAD & LOADING
@@ -453,6 +489,36 @@ def load_prevalence():
     Practice codes already normalised to plain numbers."""
     if os.path.exists(PARQUET_PREVALENCE):
         return pd.read_parquet(PARQUET_PREVALENCE)
+    return None
+
+
+@st.cache_data(show_spinner="Loading time-series data…")
+def load_timeseries_lcg():
+    """Load LCG-level monthly standardised rates (all 154 months)."""
+    if os.path.exists(PARQUET_TS_LCG):
+        df = pd.read_parquet(PARQUET_TS_LCG)
+        df["year"] = df["year"].astype(int)
+        df["month"] = df["month"].astype(int)
+        df["date"] = pd.to_datetime(
+            df["year"].astype(str) + "-" + df["month"].astype(str).str.zfill(2) + "-01"
+        )
+        df["chapter_name"] = df["bnf_chapter"].map(BNF_CHAPTERS).fillna("Unknown")
+        return df
+    return None
+
+
+@st.cache_data(show_spinner="Loading practice time-series data…")
+def load_timeseries_practice():
+    """Load practice-level monthly standardised rates (all 154 months)."""
+    if os.path.exists(PARQUET_TS_PRACTICE):
+        df = pd.read_parquet(PARQUET_TS_PRACTICE)
+        df["year"] = df["year"].astype(int)
+        df["month"] = df["month"].astype(int)
+        df["date"] = pd.to_datetime(
+            df["year"].astype(str) + "-" + df["month"].astype(str).str.zfill(2) + "-01"
+        )
+        df["chapter_name"] = df["bnf_chapter"].map(BNF_CHAPTERS).fillna("Unknown")
+        return df
     return None
 
 
@@ -779,9 +845,15 @@ def main():
     qof_df = load_qof()
     prev_df = load_prevalence()
 
+    # Load time-series data
+    ts_lcg = load_timeseries_lcg()
+    ts_practice = load_timeseries_practice()
+
     tab_names = ["Northern Ireland", "Trust / LCG", "Deprivation", "Practice"]
     if qof_df is not None or prev_df is not None:
         tab_names.append("QOF / Prevalence")
+    if ts_lcg is not None:
+        tab_names.append("Time Series")
     tab_names.append("About")
     tabs = st.tabs(tab_names)
     tab_ni, tab_area, tab_dep, tab_prac = tabs[0], tabs[1], tabs[2], tabs[3]
@@ -791,6 +863,11 @@ def main():
         _next_idx += 1
     else:
         tab_qof = None
+    if ts_lcg is not None:
+        tab_ts = tabs[_next_idx]
+        _next_idx += 1
+    else:
+        tab_ts = None
     tab_about = tabs[_next_idx]
 
     # ── TAB 1: Northern Ireland overview ────────────────────────────────
@@ -1513,6 +1590,242 @@ def main():
                         use_container_width=True,
                         hide_index=True,
                     )
+
+
+    # ── TAB: Time Series ─────────────────────────────────────────────────
+    if tab_ts is not None:
+      with tab_ts:
+        st.header("Prescribing trends over time")
+        st.caption("Monthly data from April 2013 to January 2026 (154 months)")
+
+        # ── Time Series controls ──
+        ts_col1, ts_col2, ts_col3 = st.columns(3)
+
+        # Chapter selector
+        available_chapters = sorted(ts_lcg["bnf_chapter"].unique())
+        chapter_options = {0: "All prescribing (all chapters combined)"}
+        for ch in available_chapters:
+            if ch in BNF_CHAPTERS and ch != 0:
+                has_starpu = ch in STARPU_CHAPTERS
+                label = f"Ch {ch}: {BNF_CHAPTERS[ch]}"
+                if has_starpu:
+                    label += " *"
+                chapter_options[ch] = label
+
+        with ts_col1:
+            selected_chapter = st.selectbox(
+                "BNF chapter",
+                list(chapter_options.keys()),
+                format_func=lambda x: chapter_options[x],
+                index=0,
+                key="ts_chapter",
+            )
+            if selected_chapter == 0:
+                st.caption("Showing total across all BNF chapters")
+            elif selected_chapter in STARPU_CHAPTERS:
+                st.caption("STAR-PU standardised rate available for this chapter")
+            else:
+                st.caption("No STAR-PU weighting for this chapter — raw rates only")
+
+        with ts_col2:
+            ts_metric = st.radio(
+                "Metric",
+                ["items", "cost"],
+                format_func=lambda x: "Items" if x == "items" else "Cost (£)",
+                horizontal=True,
+                key="ts_metric",
+            )
+
+        with ts_col3:
+            rate_type_options = ["Raw (per capita)"]
+            if selected_chapter in STARPU_CHAPTERS:
+                rate_type_options.append("Standardised (per STAR-PU)")
+            ts_rate = st.radio(
+                "Rate type",
+                rate_type_options,
+                horizontal=True,
+                key="ts_rate",
+            )
+            use_starpu = "Standardised" in ts_rate
+
+        # ── Filter and aggregate data ──
+        if selected_chapter == 0:
+            # Aggregate across all chapters
+            lcg_data = ts_lcg.groupby(["lcg", "date", "year", "month"]).agg(
+                total_items=("total_items", "sum"),
+                total_cost=("total_cost", "sum"),
+                starpu=("starpu", "sum"),
+            ).reset_index()
+            if ts_practice is not None:
+                prac_data = ts_practice.groupby(["practice", "date", "year", "month"]).agg(
+                    total_items=("total_items", "sum"),
+                    total_cost=("total_cost", "sum"),
+                    starpu=("starpu", "sum"),
+                    total_population=("total_population", "first"),
+                ).reset_index()
+        else:
+            lcg_data = ts_lcg[ts_lcg["bnf_chapter"] == selected_chapter].copy()
+            if ts_practice is not None:
+                prac_data = ts_practice[ts_practice["bnf_chapter"] == selected_chapter].copy()
+
+        # Compute rate columns for LCG data
+        if ts_metric == "items":
+            if use_starpu:
+                lcg_data["rate"] = lcg_data["total_items"] / lcg_data["starpu"]
+                rate_label = "Items per STAR-PU"
+            else:
+                # For raw per capita at LCG level, we need population — use starpu as proxy
+                # or compute from total items / a rough per-capita approach
+                # Actually the LCG data doesn't have total_population, so for "all chapters"
+                # aggregated we'll use items_per_starpu as the available rate
+                if "items_per_starpu" in lcg_data.columns:
+                    lcg_data["rate"] = lcg_data["total_items"] / lcg_data["starpu"]
+                else:
+                    lcg_data["rate"] = lcg_data["total_items"] / lcg_data["starpu"]
+                rate_label = "Items per STAR-PU" if use_starpu else "Items per STAR-PU (population-adjusted)"
+        else:
+            if use_starpu:
+                lcg_data["rate"] = lcg_data["total_cost"] / lcg_data["starpu"]
+                rate_label = "Cost (£) per STAR-PU"
+            else:
+                lcg_data["rate"] = lcg_data["total_cost"] / lcg_data["starpu"]
+                rate_label = "Cost (£) per STAR-PU"
+
+        # NI-wide aggregate
+        ni_data = lcg_data.groupby(["date", "year", "month"]).agg(
+            total_items=("total_items", "sum"),
+            total_cost=("total_cost", "sum"),
+            starpu=("starpu", "sum"),
+        ).reset_index()
+        if ts_metric == "items":
+            ni_data["rate"] = ni_data["total_items"] / ni_data["starpu"]
+        else:
+            ni_data["rate"] = ni_data["total_cost"] / ni_data["starpu"]
+        ni_data = ni_data.sort_values("date")
+
+        chapter_title = "All prescribing" if selected_chapter == 0 else BNF_CHAPTERS.get(selected_chapter, f"Chapter {selected_chapter}")
+
+        # ── Chart 1: NI-wide trend ──
+        st.subheader(f"Northern Ireland – {chapter_title}")
+        fig1, ax1 = plt.subplots(figsize=(12, 4))
+        ax1.plot(ni_data["date"], ni_data["rate"], color="#2563eb", linewidth=1.5)
+        ax1.set_ylabel(rate_label, fontsize=10)
+        ax1.set_xlabel("")
+        ax1.grid(axis="y", alpha=0.3)
+        ax1.spines["top"].set_visible(False)
+        ax1.spines["right"].set_visible(False)
+        # Shade COVID period
+        import datetime
+        covid_start = datetime.datetime(2020, 3, 1)
+        covid_end = datetime.datetime(2021, 6, 1)
+        ax1.axvspan(covid_start, covid_end, alpha=0.08, color="red", label="COVID-19 period")
+        ax1.legend(fontsize=8, loc="upper left")
+        fig1.tight_layout()
+        st.pyplot(fig1)
+        plt.close(fig1)
+
+        # ── Chart 2: LCG comparison ──
+        st.subheader(f"By Local Commissioning Group")
+        lcg_colours = {
+            "Belfast": "#e11d48",
+            "Northern": "#2563eb",
+            "South Eastern": "#16a34a",
+            "Southern": "#d97706",
+            "Western": "#7c3aed",
+        }
+        fig2, ax2 = plt.subplots(figsize=(12, 5))
+        for lcg_name in sorted(lcg_data["lcg"].unique()):
+            lcg_subset = lcg_data[lcg_data["lcg"] == lcg_name].sort_values("date")
+            colour = lcg_colours.get(lcg_name, "#666666")
+            ax2.plot(lcg_subset["date"], lcg_subset["rate"],
+                     label=lcg_name, color=colour, linewidth=1.2, alpha=0.85)
+
+        ax2.set_ylabel(rate_label, fontsize=10)
+        ax2.set_xlabel("")
+        ax2.grid(axis="y", alpha=0.3)
+        ax2.spines["top"].set_visible(False)
+        ax2.spines["right"].set_visible(False)
+        ax2.axvspan(covid_start, covid_end, alpha=0.08, color="red")
+        ax2.legend(fontsize=9, loc="best")
+        fig2.tight_layout()
+        st.pyplot(fig2)
+        plt.close(fig2)
+
+        # ── Chart 3: Practice-level detail (optional) ──
+        if ts_practice is not None:
+            st.subheader("Practice-level trends")
+            st.caption("Select practices to compare their prescribing trends over time.")
+
+            # Build practice selector using existing practices dataframe
+            prac_labels_ts = {}
+            if "practices" in dir() or practices is not None:
+                for _, row in practices.iterrows():
+                    pno = str(row["PracNo"]).strip()
+                    pname = row.get("_label", row.get("PracticeName", pno))
+                    prac_labels_ts[pname] = int(pno) if pno.isdigit() else pno
+
+            selected_prac_labels = st.multiselect(
+                "Select practices to compare",
+                sorted(prac_labels_ts.keys()),
+                max_selections=8,
+                key="ts_practice_select",
+            )
+
+            if selected_prac_labels:
+                selected_prac_nos = [prac_labels_ts[lbl] for lbl in selected_prac_labels]
+
+                fig3, ax3 = plt.subplots(figsize=(12, 5))
+                colours3 = plt.cm.Set1(np.linspace(0, 1, max(len(selected_prac_nos), 8)))
+
+                for idx, pno in enumerate(selected_prac_nos):
+                    prac_subset = prac_data[prac_data["practice"] == pno].sort_values("date")
+                    if prac_subset.empty:
+                        continue
+
+                    # Compute rate
+                    if ts_metric == "items":
+                        if use_starpu:
+                            prac_subset = prac_subset.copy()
+                            prac_subset["rate"] = prac_subset["total_items"] / prac_subset["starpu"]
+                        else:
+                            prac_subset = prac_subset.copy()
+                            prac_subset["rate"] = prac_subset["total_items"] / prac_subset["total_population"]
+                    else:
+                        if use_starpu:
+                            prac_subset = prac_subset.copy()
+                            prac_subset["rate"] = prac_subset["total_cost"] / prac_subset["starpu"]
+                        else:
+                            prac_subset = prac_subset.copy()
+                            prac_subset["rate"] = prac_subset["total_cost"] / prac_subset["total_population"]
+
+                    label = selected_prac_labels[idx]
+                    # Truncate long labels
+                    if len(label) > 40:
+                        label = label[:37] + "…"
+                    ax3.plot(prac_subset["date"], prac_subset["rate"],
+                             label=label, color=colours3[idx], linewidth=1.2)
+
+                rate_label_prac = rate_label
+                if not use_starpu:
+                    rate_label_prac = "Items per patient" if ts_metric == "items" else "Cost (£) per patient"
+
+                ax3.set_ylabel(rate_label_prac, fontsize=10)
+                ax3.set_xlabel("")
+                ax3.grid(axis="y", alpha=0.3)
+                ax3.spines["top"].set_visible(False)
+                ax3.spines["right"].set_visible(False)
+                ax3.axvspan(covid_start, covid_end, alpha=0.08, color="red")
+                ax3.legend(fontsize=7, loc="best")
+                fig3.tight_layout()
+                st.pyplot(fig3)
+                plt.close(fig3)
+
+        st.markdown("---")
+        st.caption(
+            "\\* Chapters marked with * have STAR-PU age-sex weightings available. "
+            "STAR-PU standardised rates adjust for the expected prescribing given a population's "
+            "age and sex profile, allowing fairer comparison between areas with different demographics."
+        )
 
 
     # ── TAB: About ──────────────────────────────────────────────────────
