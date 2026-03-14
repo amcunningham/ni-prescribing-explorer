@@ -1306,94 +1306,130 @@ drug groupings, deprivation mapping, and limitations.
         if not highlight_pracnos:
             st.info("Select practices using the **Practices** section in the sidebar to view their analysis here.")
 
-        # ── Per-practice details ───────────────────────────────────────
+        # ── Practice detail cards ──────────────────────────────────────
         _practice_colours_tab = ["#e53935", "#2563eb", "#16a34a", "#d97706", "#7c3aed"]
-        for _hp_idx, _hp_pno in enumerate(highlight_pracnos[:5]):
-            selected_pracno = str(_hp_pno).strip()
-            selected_label = pracno_to_label.get(selected_pracno, selected_pracno)
+        _n_prac = min(len(highlight_pracnos), 5)
+        if _n_prac > 0:
+            _detail_cols = st.columns(_n_prac)
+            for _hp_idx, _hp_pno in enumerate(highlight_pracnos[:5]):
+                _pno_str = str(_hp_pno).strip()
+                _prac_label = pracno_to_label.get(_pno_str, _pno_str)
+                _prac_short = _prac_label.split("(")[0].strip()
+                prac_matches = practices[practices["PracNo"] == _pno_str]
+                with _detail_cols[_hp_idx]:
+                    st.markdown(f"**{_prac_short}**")
+                    if not prac_matches.empty:
+                        _pr = prac_matches.iloc[0]
+                        dep_q = _pr.get("DepQuintile", None)
+                        dep_label = QUINTILE_LABELS_FLAT.get(
+                            int(dep_q) if pd.notna(dep_q) else None, "—"
+                        )
+                        st.caption(
+                            f"LCG: {_pr.get('LCG', '—')} · "
+                            f"Patients: {int(_pr.get('RegisteredPatients', 0)):,} · "
+                            f"Dep: {dep_label}"
+                        )
 
-            if _hp_idx > 0:
-                st.divider()
-            st.subheader(f"{selected_label}")
-
-            prac_matches = practices[practices["PracNo"] == selected_pracno]
-            if not prac_matches.empty:
-                prac_row = prac_matches.iloc[0]
-                dep_q = prac_row.get("DepQuintile", None)
-                dep_label = QUINTILE_LABELS_FLAT.get(
-                    int(dep_q) if pd.notna(dep_q) else None, "—"
-                )
-                c1, c2, c3, c4 = st.columns(4)
-                c1.metric("LCG", prac_row.get("LCG", "—"))
-                c2.metric("Trust", prac_row.get("Trust", "—"))
-                c3.metric("Registered patients", f"{int(prac_row.get('RegisteredPatients', 0)):,}")
-                c4.metric("Deprivation", dep_label)
-            else:
-                st.warning("Practice details not found in practice list.")
-
-            # ── Caterpillar: Where this practice sits ────────────────────
-            st.markdown(f"**Where this practice sits – {display_name}**")
-            highlight_this = [(selected_pracno, _practice_colours_tab[_hp_idx % 5])]
+            # ── Single caterpillar chart with all practices highlighted ──
+            st.subheader(f"Where practices sit – {display_name}")
+            highlight_all = [
+                (str(pno).strip(), _practice_colours_tab[i % 5])
+                for i, pno in enumerate(highlight_pracnos[:5])
+            ]
             fig_cat = caterpillar_chart(
-                pc, highlight_this,
+                pc, highlight_all,
                 title=f"{display_name} – all NI practices",
                 metric=metric,
             )
             st.pyplot(fig_cat)
             plt.close(fig_cat)
 
-            # ── Performance across all therapeutic areas ──────────────────
-            st.markdown("**Performance across therapeutic areas**")
-            prac_display = selected_label.split("(")[0].strip() if selected_label else selected_pracno
+            # ── Combined therapeutic area comparison ──────────────────────
+            st.subheader("Performance across therapeutic areas")
 
-            rows = []
-            for _ta_iter_name in THERAPEUTIC_AREAS:
+            # Build data for all practices at once
+            _ta_names_list = list(THERAPEUTIC_AREAS.keys())
+            _prac_infos = []
+            for _hp_idx2, _hp_pno2 in enumerate(highlight_pracnos[:5]):
+                _pno_str2 = str(_hp_pno2).strip()
+                _label2 = pracno_to_label.get(_pno_str2, _pno_str2).split("(")[0].strip()
+                _prac_infos.append({"pracno": _pno_str2, "label": _label2,
+                                    "colour": _practice_colours_tab[_hp_idx2 % 5]})
+
+            # Gather rates per TA per practice
+            _all_rows = []
+            for _ta_iter_name in _ta_names_list:
                 ta_pc = per_cap_by_name(merged, _ta_iter_name)
                 ta_mean = ta_pc[metric].mean()
-                prac = ta_pc[ta_pc["Practice"].str.strip() == str(selected_pracno).strip()]
-                if not prac.empty:
-                    val = prac.iloc[0][metric]
-                    pct = ((val - ta_mean) / ta_mean) * 100
-                    rank = int((ta_pc[metric] <= val).sum())
-                    rows.append({
-                        "Therapeutic area": _ta_iter_name,
-                        metric: val,
-                        "NI mean": ta_mean,
-                        "vs NI mean": pct,
-                        "Rank": f"{rank}/{len(ta_pc)}",
-                    })
+                row_data = {"Therapeutic area": _ta_iter_name, "NI mean": ta_mean}
+                for pinfo in _prac_infos:
+                    prac = ta_pc[ta_pc["Practice"].str.strip() == pinfo["pracno"]]
+                    if not prac.empty:
+                        val = prac.iloc[0][metric]
+                        row_data[pinfo["label"]] = val
+                        row_data[f"{pinfo['label']}_vs"] = ((val - ta_mean) / ta_mean) * 100
+                        rank = int((ta_pc[metric] <= val).sum())
+                        row_data[f"{pinfo['label']}_rank"] = f"{rank}/{len(ta_pc)}"
+                    else:
+                        row_data[pinfo["label"]] = None
+                        row_data[f"{pinfo['label']}_vs"] = None
+                        row_data[f"{pinfo['label']}_rank"] = "—"
+                _all_rows.append(row_data)
 
-            if rows:
-                results = pd.DataFrame(rows)
+            if _all_rows:
+                _combined = pd.DataFrame(_all_rows)
 
-                fig, ax = plt.subplots(figsize=(10, 5))
-                x = range(len(results))
-                w = 0.35
-                ax.bar([i - w / 2 for i in x], results[metric], w,
-                       label=prac_display, color="#1e88e5")
-                ax.bar([i + w / 2 for i in x], results["NI mean"], w,
-                       label="NI mean", color="#bdbdbd")
-                ax.set_xticks(list(x))
-                ax.set_xticklabels(results["Therapeutic area"], rotation=35, ha="right", fontsize=8)
-                ax.set_ylabel(label_metric)
-                ax.set_title(f"{prac_display} vs NI average")
-                ax.legend()
-                fig.tight_layout()
-                st.pyplot(fig)
-                plt.close(fig)
+                # Grouped bar chart
+                fig_ta, ax_ta = plt.subplots(figsize=(12, 5))
+                x = np.arange(len(_ta_names_list))
+                n_bars = len(_prac_infos) + 1  # practices + NI mean
+                w = 0.8 / n_bars
 
-                st.dataframe(
-                    results.style.format({
-                        metric: "{:.2f}",
-                        "NI mean": "{:.2f}",
-                        "vs NI mean": "{:+.1f}%",
-                    }).map(
+                for bi, pinfo in enumerate(_prac_infos):
+                    vals = _combined[pinfo["label"]].fillna(0)
+                    ax_ta.bar(x + bi * w, vals, w, label=pinfo["label"][:25],
+                              color=pinfo["colour"], alpha=0.85)
+                # NI mean as last group
+                ax_ta.bar(x + len(_prac_infos) * w, _combined["NI mean"], w,
+                          label="NI mean", color="#bdbdbd")
+
+                ax_ta.set_xticks(x + (n_bars - 1) * w / 2)
+                ax_ta.set_xticklabels(_ta_names_list, rotation=35, ha="right", fontsize=8)
+                ax_ta.set_ylabel(label_metric)
+                ax_ta.legend(fontsize=8, loc="best")
+                ax_ta.set_ylim(bottom=0)
+                fig_ta.tight_layout()
+                st.pyplot(fig_ta)
+                plt.close(fig_ta)
+
+                # Combined data table
+                _display_cols = ["Therapeutic area"]
+                _format_dict = {"NI mean": "{:.2f}"}
+                for pinfo in _prac_infos:
+                    _display_cols.append(pinfo["label"])
+                    _format_dict[pinfo["label"]] = "{:.2f}"
+                _display_cols.append("NI mean")
+                # Add vs NI columns
+                _vs_cols = []
+                for pinfo in _prac_infos:
+                    vs_col = f"{pinfo['label']}_vs"
+                    if vs_col in _combined.columns:
+                        _display_cols.append(vs_col)
+                        _format_dict[vs_col] = "{:+.1f}%"
+                        _vs_cols.append(vs_col)
+
+                _show = _combined[[c for c in _display_cols if c in _combined.columns]].copy()
+                styler = _show.style.format(
+                    {k: v for k, v in _format_dict.items() if k in _show.columns},
+                    na_rep="—"
+                )
+                if _vs_cols:
+                    styler = styler.map(
                         lambda v: "color: #e53935" if isinstance(v, (int, float)) and v > 20
                         else ("color: #43a047" if isinstance(v, (int, float)) and v < -20 else ""),
-                        subset=["vs NI mean"],
-                    ),
-                    use_container_width=True,
-                )
+                        subset=[c for c in _vs_cols if c in _show.columns],
+                    )
+                st.dataframe(styler, use_container_width=True)
 
         # ── Deprivation scatter (shown once, highlights all selected practices) ──
         if highlight_pracnos:
