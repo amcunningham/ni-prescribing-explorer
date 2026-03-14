@@ -873,19 +873,13 @@ def main():
         elif "12-month" in smoothing:
             smooth_window = 12
 
-        # Practice profile uses the first highlighted practice
-        if highlight_pracnos:
-            profile_pracno = highlight_pracnos[0]
-            st.sidebar.caption(f"Practice profile: using first highlighted practice")
-        else:
-            profile_pracno = None
+        st.sidebar.caption("Practice profile uses highlighted practices above")
     else:
         selected_chapter = 0
         ts_metric = "items"
         use_starpu = False
         smooth_window = 12
         smoothing = "12-month rolling average"
-        profile_pracno = None
 
     # Data management
     st.sidebar.divider()
@@ -1861,42 +1855,56 @@ def main():
         st.markdown("---")
         st.subheader("Practice profile – standardised time series")
         st.caption(
-            "Compare a single practice against its GP Federation peers "
+            "Compare highlighted practices against their GP Federation peers "
             "(10th–90th percentile band) and the NI average across key BNF chapters. "
-            "Select a practice using **Highlight practices** in the sidebar."
+            "Select practices using **Highlight practices** in the sidebar."
         )
 
-        if ts_practice is not None and profile_pracno is not None:
-                profile_pracno_int = int(profile_pracno) if str(profile_pracno).isdigit() else profile_pracno
+        if ts_practice is not None and highlight_pracnos:
+            import datetime as _dt
 
-                # Get federation for this practice — handle both int and string PracNo
-                _pno_str = str(profile_pracno).strip()
+            # Build info for each highlighted practice
+            _profile_colours = ["#e11d48", "#2563eb", "#16a34a", "#d97706", "#7c3aed"]
+            _profile_infos = []
+            for _pi, _pno in enumerate(highlight_pracnos[:5]):
+                _pno_int = int(_pno) if str(_pno).isdigit() else _pno
+                _pno_str = str(_pno).strip()
                 if practices["PracNo"].dtype == "object":
-                    prac_row = practices[practices["PracNo"].str.strip() == _pno_str]
+                    _pr = practices[practices["PracNo"].str.strip() == _pno_str]
                 else:
-                    prac_row = practices[practices["PracNo"] == profile_pracno_int]
-                federation_name = prac_row["Federation"].values[0].strip() if not prac_row.empty and "Federation" in prac_row.columns else None
-                practice_display = prac_row["Address1"].values[0].strip() if not prac_row.empty and "Address1" in prac_row.columns else _pno_str
-
-                # Get all practices in the same federation
-                if federation_name:
-                    fed_practices = practices[practices["Federation"].str.strip() == federation_name]["PracNo"].tolist()
-                    fed_pracnos_int = [int(p) if str(p).isdigit() else p for p in fed_practices]
+                    _pr = practices[practices["PracNo"] == _pno_int]
+                if _pr.empty:
+                    continue
+                _fed = _pr["Federation"].values[0].strip() if "Federation" in _pr.columns else None
+                _disp = _pr["Address1"].values[0].strip() if "Address1" in _pr.columns else _pno_str
+                # Get federation peer practice numbers
+                if _fed:
+                    _fp = practices[practices["Federation"].str.strip() == _fed]["PracNo"].tolist()
+                    _fp_int = [int(p) if str(p).isdigit() else p for p in _fp]
                 else:
-                    fed_pracnos_int = []
+                    _fp_int = []
+                _profile_infos.append({
+                    "pracno_int": _pno_int,
+                    "display": _disp,
+                    "federation": _fed,
+                    "fed_pracnos": _fp_int,
+                    "colour": _profile_colours[_pi % len(_profile_colours)],
+                })
 
-                # STAR-PU chapters to show
-                profile_chapters = [4, 2, 1, 6, 3, 13]  # CNS, Cardiovascular, GI, Endocrine, Respiratory, Skin
+            if _profile_infos:
+                profile_chapters = [4, 2, 1, 6, 3, 13]
                 chapter_names_map = {4: "CNS", 2: "Cardiovascular", 1: "GI", 6: "Endocrine", 3: "Respiratory", 13: "Skin"}
 
-                # Use sidebar metric and smoothing for profile too
                 profile_ts_metric = ts_metric
                 profile_smooth_w = smooth_window
-
                 rate_col = "items_per_starpu" if profile_ts_metric == "items" else "cost_per_starpu"
                 rate_label_profile = "Items per STAR-PU" if profile_ts_metric == "items" else "Cost (£) per STAR-PU"
 
-                # Build figure: 2 columns × 3 rows
+                def _smooth(series, w):
+                    if w > 1:
+                        return series.rolling(window=w, min_periods=w).mean()
+                    return series
+
                 fig_profile, axes = plt.subplots(3, 2, figsize=(14, 12), sharex=True)
                 axes_flat = axes.flatten()
 
@@ -1904,14 +1912,12 @@ def main():
                     ax = axes_flat[idx]
                     ch_label = chapter_names_map.get(ch, BNF_CHAPTERS.get(ch, f"Ch {ch}"))
 
-                    # Filter practice data for this chapter
                     ch_data = ts_practice[ts_practice["bnf_chapter"] == ch].copy()
                     if ch_data.empty:
                         ax.set_title(ch_label, fontsize=11, fontweight="bold")
                         ax.text(0.5, 0.5, "No data", ha="center", va="center", transform=ax.transAxes)
                         continue
 
-                    # Compute rate if not already present
                     if rate_col not in ch_data.columns:
                         if profile_ts_metric == "items":
                             ch_data["items_per_starpu"] = ch_data["total_items"] / ch_data["starpu"]
@@ -1925,78 +1931,64 @@ def main():
                     ).reset_index()
                     ni_ch["rate"] = ni_ch["total"] / ni_ch["starpu_sum"]
                     ni_ch = ni_ch.sort_values("date")
+                    ax.plot(ni_ch["date"], _smooth(ni_ch["rate"], profile_smooth_w),
+                            color="#999999", linewidth=1.5, linestyle=":", label="NI average")
 
-                    # Federation percentiles
-                    if fed_pracnos_int:
-                        fed_ch = ch_data[ch_data["practice"].isin(fed_pracnos_int)].copy()
-                        fed_agg = fed_ch.groupby("date")[rate_col].agg(
-                            median="median",
-                            p10=lambda x: x.quantile(0.1),
-                            p90=lambda x: x.quantile(0.9),
-                        ).reset_index()
-                        fed_agg = fed_agg.sort_values("date")
+                    # Plot each highlighted practice with its federation band
+                    _fed_bands_drawn = set()
+                    for pinfo in _profile_infos:
+                        # Federation band (only draw once per unique federation)
+                        if pinfo["federation"] and pinfo["federation"] not in _fed_bands_drawn and pinfo["fed_pracnos"]:
+                            fed_ch = ch_data[ch_data["practice"].isin(pinfo["fed_pracnos"])]
+                            if not fed_ch.empty:
+                                fed_agg = fed_ch.groupby("date")[rate_col].agg(
+                                    p10=lambda x: x.quantile(0.1),
+                                    p90=lambda x: x.quantile(0.9),
+                                ).reset_index().sort_values("date")
+                                p10_s = _smooth(fed_agg["p10"], profile_smooth_w)
+                                p90_s = _smooth(fed_agg["p90"], profile_smooth_w)
+                                ax.fill_between(fed_agg["date"], p10_s, p90_s,
+                                               alpha=0.1, color=pinfo["colour"],
+                                               label=f"{pinfo['federation']} (10th–90th)")
+                            _fed_bands_drawn.add(pinfo["federation"])
 
-                    # Practice
-                    prac_ch = ch_data[ch_data["practice"] == profile_pracno_int].sort_values("date")
-
-                    # Apply smoothing
-                    def smooth(series, w):
-                        if w > 1:
-                            return series.rolling(window=w, min_periods=w).mean()
-                        return series
-
-                    # Plot federation band
-                    if fed_pracnos_int and not fed_agg.empty:
-                        p10_s = smooth(fed_agg["p10"], profile_smooth_w)
-                        p90_s = smooth(fed_agg["p90"], profile_smooth_w)
-                        med_s = smooth(fed_agg["median"], profile_smooth_w)
-                        ax.fill_between(fed_agg["date"], p10_s, p90_s,
-                                       alpha=0.15, color="#2563eb", label=f"{federation_name} (10th–90th)")
-                        ax.plot(fed_agg["date"], med_s, color="#2563eb",
-                               linewidth=1, alpha=0.5, linestyle="--")
-
-                    # Plot NI average
-                    ni_rate_s = smooth(ni_ch["rate"], profile_smooth_w)
-                    ax.plot(ni_ch["date"], ni_rate_s, color="#666666",
-                           linewidth=1.5, linestyle=":", label="NI average")
-
-                    # Plot practice
-                    if not prac_ch.empty:
-                        prac_rate_s = smooth(prac_ch[rate_col], profile_smooth_w)
-                        ax.plot(prac_ch["date"], prac_rate_s, color="#e11d48",
-                               linewidth=2, label=practice_display[:30])
+                        # Practice line
+                        prac_ch = ch_data[ch_data["practice"] == pinfo["pracno_int"]].sort_values("date")
+                        if not prac_ch.empty:
+                            ax.plot(prac_ch["date"],
+                                    _smooth(prac_ch[rate_col], profile_smooth_w),
+                                    color=pinfo["colour"], linewidth=2,
+                                    label=pinfo["display"][:30])
 
                     ax.set_title(ch_label, fontsize=11, fontweight="bold")
                     ax.grid(axis="y", alpha=0.3)
                     ax.spines["top"].set_visible(False)
                     ax.spines["right"].set_visible(False)
-
-                    # COVID shading
-                    import datetime
-                    ax.axvspan(datetime.datetime(2020, 3, 1), datetime.datetime(2021, 6, 1),
+                    ax.axvspan(_dt.datetime(2020, 3, 1), _dt.datetime(2021, 6, 1),
                               alpha=0.06, color="red")
-
                     if idx == 0:
                         ax.legend(fontsize=7, loc="best")
-                    if idx >= 4:  # bottom row
+                    if idx >= 4:
                         ax.tick_params(axis="x", rotation=30, labelsize=8)
                     ax.set_ylabel(rate_label_profile, fontsize=8)
 
+                # Title
+                _title_names = [p["display"][:20] for p in _profile_infos]
                 fig_profile.suptitle(
-                    f"{practice_display} vs {federation_name or 'Federation'} vs NI",
-                    fontsize=13, fontweight="bold", y=1.01
+                    " vs ".join(_title_names) + " vs NI",
+                    fontsize=12, fontweight="bold", y=1.01
                 )
                 fig_profile.tight_layout()
                 st.pyplot(fig_profile)
                 plt.close(fig_profile)
 
-                # Summary stats table
-                if not prac_ch.empty and fed_pracnos_int:
-                    st.caption(
-                        f"Federation: **{federation_name}** ({len(fed_pracnos_int)} practices) · "
-                        f"Blue band = 10th–90th percentile of federation practices · "
-                        f"Dashed blue = federation median · Grey dotted = NI average"
-                    )
+                # Caption
+                _fed_list = list(dict.fromkeys(p["federation"] for p in _profile_infos if p["federation"]))
+                st.caption(
+                    f"Federations: {', '.join(_fed_list)} · "
+                    f"Shaded bands = 10th–90th percentile of federation peers · "
+                    f"Grey dotted = NI average"
+                )
 
         st.markdown("---")
         st.caption(
