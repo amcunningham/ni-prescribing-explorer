@@ -806,6 +806,94 @@ def main():
     )
     highlight_pracnos = [label_to_pracno.get(l, l) for l in highlight_labels]
 
+    # ── Time Series sidebar controls ────────────────────────────────────
+    st.sidebar.divider()
+    st.sidebar.header("Time Series")
+
+    # Chapter selector (built once ts_lcg is loaded, but we define the sidebar
+    # widgets here so they appear in the right order — values are used later)
+    _ts_lcg_check = load_timeseries_lcg()
+    if _ts_lcg_check is not None:
+        _avail_chapters = sorted(_ts_lcg_check["bnf_chapter"].unique())
+        _chapter_opts = {0: "All prescribing (all chapters combined)"}
+        for _ch in _avail_chapters:
+            if _ch in BNF_CHAPTERS and _ch != 0:
+                _lbl = f"Ch {_ch}: {BNF_CHAPTERS[_ch]}"
+                if _ch in STARPU_CHAPTERS:
+                    _lbl += " *"
+                _chapter_opts[_ch] = _lbl
+
+        _chapter_opts_list = list(_chapter_opts.keys())
+        _chapter_opts_labels = list(_chapter_opts.values())
+        selected_chapter = st.sidebar.selectbox(
+            "BNF chapter",
+            _chapter_opts_list,
+            format_func=lambda x, _m=_chapter_opts: _m.get(x, str(x)),
+            index=0,
+            key="ts_chapter",
+        )
+        if selected_chapter == 0:
+            st.sidebar.caption("Total across all BNF chapters")
+        elif selected_chapter in STARPU_CHAPTERS:
+            st.sidebar.caption("STAR-PU standardised rate available")
+        else:
+            st.sidebar.caption("No STAR-PU weighting — raw rates only")
+
+        ts_metric = st.sidebar.radio(
+            "Time series metric",
+            ["items", "cost"],
+            format_func=lambda x: "Items" if x == "items" else "Cost (£)",
+            horizontal=True,
+            key="ts_metric",
+        )
+
+        _has_starpu = selected_chapter in STARPU_CHAPTERS
+        if _has_starpu:
+            _rate_opts = ["Raw (per capita)", "Standardised (per STAR-PU)"]
+            ts_rate = st.sidebar.radio(
+                "Rate type",
+                _rate_opts,
+                horizontal=True,
+                key="ts_rate",
+            )
+            use_starpu = "Standardised" in ts_rate
+        else:
+            st.sidebar.caption("Rate type: Raw (per capita) — no STAR-PU for this chapter")
+            use_starpu = False
+
+        smoothing = st.sidebar.selectbox(
+            "Smoothing",
+            ["Monthly (raw)", "3-month rolling average", "12-month rolling average"],
+            index=2,
+            key="ts_smoothing",
+        )
+        smooth_window = 1
+        if "3-month" in smoothing:
+            smooth_window = 3
+        elif "12-month" in smoothing:
+            smooth_window = 12
+
+        # Practice profile selector
+        st.sidebar.markdown("**Practice profile**")
+        profile_labels = sorted(label_to_pracno.keys())
+        _profile_default_idx = 0
+        if highlight_labels and highlight_labels[0] in profile_labels:
+            _profile_default_idx = profile_labels.index(highlight_labels[0])
+        profile_pick = st.sidebar.selectbox(
+            "Practice to profile",
+            profile_labels,
+            index=_profile_default_idx,
+            key="ts_profile_practice",
+        )
+        profile_pracno = label_to_pracno.get(profile_pick, None)
+    else:
+        selected_chapter = 0
+        ts_metric = "items"
+        use_starpu = False
+        smooth_window = 12
+        smoothing = "12-month rolling average"
+        profile_pracno = None
+
     # Data management
     st.sidebar.divider()
     if st.sidebar.button("Refresh data from OpenDataNI"):
@@ -1596,71 +1684,7 @@ def main():
     if tab_ts is not None:
       with tab_ts:
         st.header("Prescribing trends over time")
-        st.caption("Monthly data from April 2013 to January 2026 (154 months)")
-
-        # ── Time Series controls ──
-        ts_col1, ts_col2, ts_col3 = st.columns(3)
-
-        # Chapter selector
-        available_chapters = sorted(ts_lcg["bnf_chapter"].unique())
-        chapter_options = {0: "All prescribing (all chapters combined)"}
-        for ch in available_chapters:
-            if ch in BNF_CHAPTERS and ch != 0:
-                has_starpu = ch in STARPU_CHAPTERS
-                label = f"Ch {ch}: {BNF_CHAPTERS[ch]}"
-                if has_starpu:
-                    label += " *"
-                chapter_options[ch] = label
-
-        with ts_col1:
-            selected_chapter = st.selectbox(
-                "BNF chapter",
-                list(chapter_options.keys()),
-                format_func=lambda x: chapter_options[x],
-                index=0,
-                key="ts_chapter",
-            )
-            if selected_chapter == 0:
-                st.caption("Showing total across all BNF chapters")
-            elif selected_chapter in STARPU_CHAPTERS:
-                st.caption("STAR-PU standardised rate available for this chapter")
-            else:
-                st.caption("No STAR-PU weighting for this chapter — raw rates only")
-
-        with ts_col2:
-            ts_metric = st.radio(
-                "Metric",
-                ["items", "cost"],
-                format_func=lambda x: "Items" if x == "items" else "Cost (£)",
-                horizontal=True,
-                key="ts_metric",
-            )
-
-        with ts_col3:
-            rate_type_options = ["Raw (per capita)"]
-            if selected_chapter in STARPU_CHAPTERS:
-                rate_type_options.append("Standardised (per STAR-PU)")
-            ts_rate = st.radio(
-                "Rate type",
-                rate_type_options,
-                horizontal=True,
-                key="ts_rate",
-            )
-            use_starpu = "Standardised" in ts_rate
-
-        ts_col4, _ = st.columns([1, 2])
-        with ts_col4:
-            smoothing = st.selectbox(
-                "Smoothing",
-                ["Monthly (raw)", "3-month rolling average", "12-month rolling average"],
-                index=2,
-                key="ts_smoothing",
-            )
-        smooth_window = 1
-        if "3-month" in smoothing:
-            smooth_window = 3
-        elif "12-month" in smoothing:
-            smooth_window = 12
+        st.caption("Monthly data from April 2013 to January 2026 (154 months) · Use the **sidebar** to select BNF chapter, metric and smoothing")
 
         # ── Filter and aggregate data ──
         if selected_chapter == 0:
@@ -1839,6 +1863,146 @@ def main():
                 fig3.tight_layout()
                 st.pyplot(fig3)
                 plt.close(fig3)
+
+        # ── Practice profile: multi-chapter panel ──────────────────────
+        st.markdown("---")
+        st.subheader("Practice profile – standardised time series")
+        st.caption(
+            "Compare a single practice against its GP Federation peers "
+            "(10th–90th percentile band) and the NI average across key BNF chapters."
+        )
+
+        if ts_practice is not None and profile_pracno is not None:
+                profile_pracno_int = int(profile_pracno) if str(profile_pracno).isdigit() else profile_pracno
+
+                # Get federation for this practice — handle both int and string PracNo
+                _pno_str = str(profile_pracno).strip()
+                if practices["PracNo"].dtype == "object":
+                    prac_row = practices[practices["PracNo"].str.strip() == _pno_str]
+                else:
+                    prac_row = practices[practices["PracNo"] == profile_pracno_int]
+                federation_name = prac_row["Federation"].values[0].strip() if not prac_row.empty and "Federation" in prac_row.columns else None
+                practice_display = prac_row["Address1"].values[0].strip() if not prac_row.empty and "Address1" in prac_row.columns else _pno_str
+
+                # Get all practices in the same federation
+                if federation_name:
+                    fed_practices = practices[practices["Federation"].str.strip() == federation_name]["PracNo"].tolist()
+                    fed_pracnos_int = [int(p) if str(p).isdigit() else p for p in fed_practices]
+                else:
+                    fed_pracnos_int = []
+
+                # STAR-PU chapters to show
+                profile_chapters = [4, 2, 1, 6, 3, 13]  # CNS, Cardiovascular, GI, Endocrine, Respiratory, Skin
+                chapter_names_map = {4: "CNS", 2: "Cardiovascular", 1: "GI", 6: "Endocrine", 3: "Respiratory", 13: "Skin"}
+
+                # Use sidebar metric and smoothing for profile too
+                profile_ts_metric = ts_metric
+                profile_smooth_w = smooth_window
+
+                rate_col = "items_per_starpu" if profile_ts_metric == "items" else "cost_per_starpu"
+                rate_label_profile = "Items per STAR-PU" if profile_ts_metric == "items" else "Cost (£) per STAR-PU"
+
+                # Build figure: 2 columns × 3 rows
+                fig_profile, axes = plt.subplots(3, 2, figsize=(14, 12), sharex=True)
+                axes_flat = axes.flatten()
+
+                for idx, ch in enumerate(profile_chapters):
+                    ax = axes_flat[idx]
+                    ch_label = chapter_names_map.get(ch, BNF_CHAPTERS.get(ch, f"Ch {ch}"))
+
+                    # Filter practice data for this chapter
+                    ch_data = ts_practice[ts_practice["bnf_chapter"] == ch].copy()
+                    if ch_data.empty:
+                        ax.set_title(ch_label, fontsize=11, fontweight="bold")
+                        ax.text(0.5, 0.5, "No data", ha="center", va="center", transform=ax.transAxes)
+                        continue
+
+                    # Compute rate if not already present
+                    if rate_col not in ch_data.columns:
+                        if profile_ts_metric == "items":
+                            ch_data["items_per_starpu"] = ch_data["total_items"] / ch_data["starpu"]
+                        else:
+                            ch_data["cost_per_starpu"] = ch_data["total_cost"] / ch_data["starpu"]
+
+                    # NI average
+                    ni_ch = ch_data.groupby("date").agg(
+                        total=("total_items" if profile_ts_metric == "items" else "total_cost", "sum"),
+                        starpu_sum=("starpu", "sum"),
+                    ).reset_index()
+                    ni_ch["rate"] = ni_ch["total"] / ni_ch["starpu_sum"]
+                    ni_ch = ni_ch.sort_values("date")
+
+                    # Federation percentiles
+                    if fed_pracnos_int:
+                        fed_ch = ch_data[ch_data["practice"].isin(fed_pracnos_int)].copy()
+                        fed_agg = fed_ch.groupby("date")[rate_col].agg(
+                            median="median",
+                            p10=lambda x: x.quantile(0.1),
+                            p90=lambda x: x.quantile(0.9),
+                        ).reset_index()
+                        fed_agg = fed_agg.sort_values("date")
+
+                    # Practice
+                    prac_ch = ch_data[ch_data["practice"] == profile_pracno_int].sort_values("date")
+
+                    # Apply smoothing
+                    def smooth(series, w):
+                        if w > 1:
+                            return series.rolling(window=w, min_periods=w).mean()
+                        return series
+
+                    # Plot federation band
+                    if fed_pracnos_int and not fed_agg.empty:
+                        p10_s = smooth(fed_agg["p10"], profile_smooth_w)
+                        p90_s = smooth(fed_agg["p90"], profile_smooth_w)
+                        med_s = smooth(fed_agg["median"], profile_smooth_w)
+                        ax.fill_between(fed_agg["date"], p10_s, p90_s,
+                                       alpha=0.15, color="#2563eb", label=f"{federation_name} (10th–90th)")
+                        ax.plot(fed_agg["date"], med_s, color="#2563eb",
+                               linewidth=1, alpha=0.5, linestyle="--")
+
+                    # Plot NI average
+                    ni_rate_s = smooth(ni_ch["rate"], profile_smooth_w)
+                    ax.plot(ni_ch["date"], ni_rate_s, color="#666666",
+                           linewidth=1.5, linestyle=":", label="NI average")
+
+                    # Plot practice
+                    if not prac_ch.empty:
+                        prac_rate_s = smooth(prac_ch[rate_col], profile_smooth_w)
+                        ax.plot(prac_ch["date"], prac_rate_s, color="#e11d48",
+                               linewidth=2, label=practice_display[:30])
+
+                    ax.set_title(ch_label, fontsize=11, fontweight="bold")
+                    ax.grid(axis="y", alpha=0.3)
+                    ax.spines["top"].set_visible(False)
+                    ax.spines["right"].set_visible(False)
+
+                    # COVID shading
+                    import datetime
+                    ax.axvspan(datetime.datetime(2020, 3, 1), datetime.datetime(2021, 6, 1),
+                              alpha=0.06, color="red")
+
+                    if idx == 0:
+                        ax.legend(fontsize=7, loc="best")
+                    if idx >= 4:  # bottom row
+                        ax.tick_params(axis="x", rotation=30, labelsize=8)
+                    ax.set_ylabel(rate_label_profile, fontsize=8)
+
+                fig_profile.suptitle(
+                    f"{practice_display} vs {federation_name or 'Federation'} vs NI",
+                    fontsize=13, fontweight="bold", y=1.01
+                )
+                fig_profile.tight_layout()
+                st.pyplot(fig_profile)
+                plt.close(fig_profile)
+
+                # Summary stats table
+                if not prac_ch.empty and fed_pracnos_int:
+                    st.caption(
+                        f"Federation: **{federation_name}** ({len(fed_pracnos_int)} practices) · "
+                        f"Blue band = 10th–90th percentile of federation practices · "
+                        f"Dashed blue = federation median · Grey dotted = NI average"
+                    )
 
         st.markdown("---")
         st.caption(
