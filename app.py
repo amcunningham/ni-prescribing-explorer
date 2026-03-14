@@ -913,7 +913,17 @@ def main():
         key="find_by",
     )
 
-    if find_by == "Postcode area":
+    if find_by == "Name":
+        name_search = st.sidebar.text_input("Type first few letters", "", key="name_search_input")
+        if name_search.strip():
+            _search = name_search.strip().lower()
+            finder_labels = [l for l in all_labels if l.lower().startswith(_search)]
+            if not finder_labels:
+                # Fall back to contains search if no prefix match
+                finder_labels = [l for l in all_labels if _search in l.lower()]
+        else:
+            finder_labels = all_labels
+    elif find_by == "Postcode area":
         bt_areas = sorted(practices["Postcode"].str.extract(r"(BT\d+)", expand=False).dropna().unique())
         selected_bt = st.sidebar.selectbox("Postcode area", bt_areas, key="postcode_area")
         filtered = practices[practices["Postcode"].str.startswith(selected_bt)]
