@@ -891,14 +891,16 @@ def main():
         if "Address1" in practices.columns
         else practices["PracticeName"].str.strip()
     )
+    practices["PracNo"] = practices["PracNo"].astype(str).str.strip()
+    _pracno_str = practices["PracNo"]
     practices["_label"] = (
         _prac_display
         + "  (" + practices["Postcode"].str.strip() + ", "
         + practices["LCG"].str.strip() + ", #"
-        + practices["PracNo"].str.strip() + ")"
+        + _pracno_str + ")"
     )
-    label_to_pracno = dict(zip(practices["_label"], practices["PracNo"].str.strip()))
-    pracno_to_label = dict(zip(practices["PracNo"].str.strip(), practices["_label"]))
+    label_to_pracno = dict(zip(practices["_label"], _pracno_str))
+    pracno_to_label = dict(zip(_pracno_str, practices["_label"]))
 
     find_by = st.sidebar.radio(
         "Find practices by",
