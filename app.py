@@ -873,19 +873,12 @@ def main():
         elif "12-month" in smoothing:
             smooth_window = 12
 
-        # Practice profile selector
-        st.sidebar.markdown("**Practice profile**")
-        profile_labels = sorted(label_to_pracno.keys())
-        _profile_default_idx = 0
-        if highlight_labels and highlight_labels[0] in profile_labels:
-            _profile_default_idx = profile_labels.index(highlight_labels[0])
-        profile_pick = st.sidebar.selectbox(
-            "Practice to profile",
-            profile_labels,
-            index=_profile_default_idx,
-            key="ts_profile_practice",
-        )
-        profile_pracno = label_to_pracno.get(profile_pick, None)
+        # Practice profile uses the first highlighted practice
+        if highlight_pracnos:
+            profile_pracno = highlight_pracnos[0]
+            st.sidebar.caption(f"Practice profile: using first highlighted practice")
+        else:
+            profile_pracno = None
     else:
         selected_chapter = 0
         ts_metric = "items"
@@ -1869,7 +1862,8 @@ def main():
         st.subheader("Practice profile – standardised time series")
         st.caption(
             "Compare a single practice against its GP Federation peers "
-            "(10th–90th percentile band) and the NI average across key BNF chapters."
+            "(10th–90th percentile band) and the NI average across key BNF chapters. "
+            "Select a practice using **Highlight practices** in the sidebar."
         )
 
         if ts_practice is not None and profile_pracno is not None:
