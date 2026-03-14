@@ -902,6 +902,10 @@ def main():
     label_to_pracno = dict(zip(practices["_label"], _pracno_str))
     pracno_to_label = dict(zip(_pracno_str, practices["_label"]))
 
+    # Full list of all practice labels (always available for multiselect)
+    all_labels = sorted(label_to_pracno.keys())
+
+    # Finder: helps you locate practices, then add them to the highlight list
     find_by = st.sidebar.radio(
         "Find practices by",
         ["Name", "Postcode area", "LCG / Trust", "Practice number"],
@@ -909,32 +913,49 @@ def main():
         key="find_by",
     )
 
-    if find_by == "Name":
-        all_labels = sorted(label_to_pracno.keys())
-    elif find_by == "Postcode area":
+    if find_by == "Postcode area":
         bt_areas = sorted(practices["Postcode"].str.extract(r"(BT\d+)", expand=False).dropna().unique())
         selected_bt = st.sidebar.selectbox("Postcode area", bt_areas, key="postcode_area")
         filtered = practices[practices["Postcode"].str.startswith(selected_bt)]
-        all_labels = sorted(filtered["_label"].unique())
+        finder_labels = sorted(filtered["_label"].unique())
     elif find_by == "LCG / Trust":
         selected_lcg = st.sidebar.selectbox("LCG area", sorted(practices["LCG"].dropna().unique()), key="lcg_area")
         filtered = practices[practices["LCG"] == selected_lcg]
-        all_labels = sorted(filtered["_label"].unique())
-    else:
+        finder_labels = sorted(filtered["_label"].unique())
+    elif find_by == "Practice number":
         prac_num = st.sidebar.text_input("Practice number", "", key="prac_num_input")
         if prac_num.strip():
-            filtered = practices[practices["PracNo"].str.strip() == prac_num.strip()]
-            all_labels = sorted(filtered["_label"].unique())
+            filtered = practices[practices["PracNo"] == prac_num.strip()]
+            finder_labels = sorted(filtered["_label"].unique())
         else:
-            all_labels = sorted(label_to_pracno.keys())
+            finder_labels = all_labels
+    else:
+        finder_labels = all_labels
+
+    # Quick-add: pick from filtered list to add to highlights
+    _quick_add = st.sidebar.selectbox(
+        "Add a practice",
+        finder_labels,
+        index=None,
+        placeholder="Pick from list above…",
+        key="quick_add_practice",
+    )
+
+    # Multiselect with FULL list so selections persist across finder changes
+    _current_default = st.session_state.get("_highlight_labels_persistent", [])
+    # If user just picked one via quick-add, include it
+    if _quick_add and _quick_add not in _current_default:
+        _current_default = _current_default + [_quick_add]
 
     highlight_labels = st.sidebar.multiselect(
-        "Highlight practices",
+        "Selected practices",
         all_labels,
-        default=[],
+        default=_current_default,
         key="highlight_labels",
-        help="Select up to 5 practices to display across charts",
+        help="Up to 5 practices shown across charts. Use 'Add a practice' above or type here.",
     )
+    # Persist so they survive finder switches
+    st.session_state["_highlight_labels_persistent"] = highlight_labels
     highlight_pracnos = [label_to_pracno.get(l, l) for l in highlight_labels]
 
     # 8. ABOUT EXPANDER (brief)
@@ -1123,14 +1144,20 @@ drug groupings, deprivation mapping, and limitations.
     with tab_practices:
         st.header("Practice Analysis")
 
-        # ── Practice detail selector ─────────────────────────────────────
-        selected_label = st.selectbox("Select a practice", all_labels, key="tab_prac_select")
-        selected_pracno = label_to_pracno.get(selected_label, selected_label) if selected_label else None
+        if not highlight_pracnos:
+            st.info("Select practices using the **Practices** section in the sidebar to view their analysis here.")
 
-        if selected_pracno:
+        # ── Per-practice details ───────────────────────────────────────
+        _practice_colours_tab = ["#e53935", "#2563eb", "#16a34a", "#d97706", "#7c3aed"]
+        for _hp_idx, _hp_pno in enumerate(highlight_pracnos[:5]):
+            selected_pracno = str(_hp_pno).strip()
+            selected_label = pracno_to_label.get(selected_pracno, selected_pracno)
+
+            if _hp_idx > 0:
+                st.divider()
             st.subheader(f"{selected_label}")
 
-            prac_matches = practices[practices["PracNo"].str.strip() == str(selected_pracno).strip()]
+            prac_matches = practices[practices["PracNo"] == selected_pracno]
             if not prac_matches.empty:
                 prac_row = prac_matches.iloc[0]
                 dep_q = prac_row.get("DepQuintile", None)
@@ -1146,23 +1173,23 @@ drug groupings, deprivation mapping, and limitations.
                 st.warning("Practice details not found in practice list.")
 
             # ── Caterpillar: Where this practice sits ────────────────────
-            st.subheader(f"Where this practice sits – {display_name}")
-            highlight_this = [(selected_pracno, "#e53935")]
+            st.markdown(f"**Where this practice sits – {display_name}**")
+            highlight_this = [(selected_pracno, _practice_colours_tab[_hp_idx % 5])]
             fig_cat = caterpillar_chart(
                 pc, highlight_this,
-                title=f"{display_name} – all NI practices (selected in red)",
+                title=f"{display_name} – all NI practices",
                 metric=metric,
             )
             st.pyplot(fig_cat)
             plt.close(fig_cat)
 
             # ── Performance across all therapeutic areas ──────────────────
-            st.subheader("Performance across all therapeutic areas")
+            st.markdown("**Performance across therapeutic areas**")
             prac_display = selected_label.split("(")[0].strip() if selected_label else selected_pracno
 
             rows = []
-            for ta_name in THERAPEUTIC_AREAS:
-                ta_pc = per_cap_by_name(merged, ta_name)
+            for _ta_iter_name in THERAPEUTIC_AREAS:
+                ta_pc = per_cap_by_name(merged, _ta_iter_name)
                 ta_mean = ta_pc[metric].mean()
                 prac = ta_pc[ta_pc["Practice"].str.strip() == str(selected_pracno).strip()]
                 if not prac.empty:
@@ -1170,7 +1197,7 @@ drug groupings, deprivation mapping, and limitations.
                     pct = ((val - ta_mean) / ta_mean) * 100
                     rank = int((ta_pc[metric] <= val).sum())
                     rows.append({
-                        "Therapeutic area": ta_name,
+                        "Therapeutic area": _ta_iter_name,
                         metric: val,
                         "NI mean": ta_mean,
                         "vs NI mean": pct,
@@ -1209,7 +1236,8 @@ drug groupings, deprivation mapping, and limitations.
                     use_container_width=True,
                 )
 
-            # ── Deprivation scatter (practice level) ──────────────────────
+        # ── Deprivation scatter (shown once, highlights all selected practices) ──
+        if highlight_pracnos:
             st.divider()
             st.subheader("Practice-level deprivation analysis")
             st.caption("Deprivation quintiles based on NIMDM 2017 ward-level scores (1 = most deprived, 5 = least deprived)")
@@ -1217,51 +1245,50 @@ drug groupings, deprivation mapping, and limitations.
             has_dep = "DepQuintile" in pc.columns and pc["DepQuintile"].notna().any()
             if not has_dep:
                 st.warning("Deprivation data not available. Refresh data to include NIMDM linkage.")
-            else:
-                # Deprivation scatter
-                if "Ward_Dep_Rank" in pc.columns:
-                    scatter_data = pc.dropna(subset=["Ward_Dep_Rank", metric])
+            elif "Ward_Dep_Rank" in pc.columns:
+                scatter_data = pc.dropna(subset=["Ward_Dep_Rank", metric])
 
-                    ctrl1, ctrl2 = st.columns(2)
-                    with ctrl1:
-                        colour_by = st.radio(
-                            "Colour practices by",
-                            ["Deprivation quintile", "LCG"],
-                            horizontal=True,
-                            key="practices_tab_colour",
-                        )
-                    with ctrl2:
-                        lcg_options = ["All Northern Ireland"] + sorted(pc["LCG"].dropna().unique().tolist())
-                        selected_dep_lcg = st.selectbox("Filter by LCG", lcg_options, key="practices_tab_lcg")
+                ctrl1, ctrl2 = st.columns(2)
+                with ctrl1:
+                    colour_by = st.radio(
+                        "Colour practices by",
+                        ["Deprivation quintile", "LCG"],
+                        horizontal=True,
+                        key="practices_tab_colour",
+                    )
+                with ctrl2:
+                    lcg_options = ["All Northern Ireland"] + sorted(pc["LCG"].dropna().unique().tolist())
+                    selected_dep_lcg = st.selectbox("Filter by LCG", lcg_options, key="practices_tab_lcg")
 
-                    if selected_dep_lcg != "All Northern Ireland":
-                        scatter_data = scatter_data[scatter_data["LCG"] == selected_dep_lcg]
-                        area_label = selected_dep_lcg
-                    else:
-                        area_label = "Northern Ireland"
+                if selected_dep_lcg != "All Northern Ireland":
+                    scatter_data = scatter_data[scatter_data["LCG"] == selected_dep_lcg]
+                    area_label = selected_dep_lcg
+                else:
+                    area_label = "Northern Ireland"
 
-                    fig_scat, ax_scat = plt.subplots(figsize=(10, 5))
-                    _scatter_by_colour(ax_scat, scatter_data, metric, colour_by)
-                    _scatter_trend_line(ax_scat, scatter_data, metric)
+                fig_scat, ax_scat = plt.subplots(figsize=(10, 5))
+                _scatter_by_colour(ax_scat, scatter_data, metric, colour_by)
+                _scatter_trend_line(ax_scat, scatter_data, metric)
 
-                    # Highlight selected practice
-                    _scatter_highlight_practice(ax_scat, scatter_data, metric, selected_pracno, pracno_to_label)
+                # Highlight all selected practices
+                for _hp_idx2, _hp_pno2 in enumerate(highlight_pracnos[:5]):
+                    _scatter_highlight_practice(
+                        ax_scat, scatter_data, metric,
+                        str(_hp_pno2).strip(), pracno_to_label,
+                    )
 
-                    ax_scat.set_xlabel("Ward deprivation rank (1 = most deprived)")
-                    ax_scat.set_ylabel(label_metric)
-                    ax_scat.set_title(f"{display_name} – prescribing vs deprivation ({area_label})")
-                    ax_scat.legend(fontsize=8)
-                    fig_scat.tight_layout()
-                    st.pyplot(fig_scat)
-                    plt.close(fig_scat)
+                ax_scat.set_xlabel("Ward deprivation rank (1 = most deprived)")
+                ax_scat.set_ylabel(label_metric)
+                ax_scat.set_title(f"{display_name} – prescribing vs deprivation ({area_label})")
+                ax_scat.legend(fontsize=8)
+                fig_scat.tight_layout()
+                st.pyplot(fig_scat)
+                plt.close(fig_scat)
 
-                    # Correlation stat
-                    from scipy import stats
-                    tau, p_val = stats.kendalltau(scatter_data["Ward_Dep_Rank"], scatter_data[metric])
-                    sig = "***" if p_val < 0.0005 else ("**" if p_val < 0.01 else ("*" if p_val < 0.05 else "ns"))
-                    st.caption(f"Kendall's τ = {tau:.3f} (p = {p_val:.4f}) {sig} · Negative τ = higher prescribing in more deprived areas")
-        else:
-            st.info("Select a practice from the dropdown above to view details.")
+                from scipy import stats
+                tau, p_val = stats.kendalltau(scatter_data["Ward_Dep_Rank"], scatter_data[metric])
+                sig = "***" if p_val < 0.0005 else ("**" if p_val < 0.01 else ("*" if p_val < 0.05 else "ns"))
+                st.caption(f"Kendall's τ = {tau:.3f} (p = {p_val:.4f}) {sig} · Negative τ = higher prescribing in more deprived areas")
 
 
     # ════════════════════════════════════════════════════════════════════
