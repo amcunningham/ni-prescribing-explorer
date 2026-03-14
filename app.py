@@ -139,6 +139,14 @@ THERAPEUTIC_AREAS = {
         )],
         "description": "ACEi, ARBs, CCBs, thiazide-like diuretics and alpha-blockers for hypertension (NICE NG136)",
     },
+    "HRT": {
+        "filter": lambda df: df[df["VTM_NM"].str.contains(
+            "estradiol|oestrogen|progesterone|utrogestan|tibolone|norethisterone"
+            "|dydrogesterone|medroxyprogesterone|conjugated oestrogens",
+            case=False, na=False
+        )],
+        "description": "Hormone replacement therapy — includes estrogens, progestogens and combination preparations (NICE NG23)",
+    },
 }
 
 # ── BNF chapter names ────────────────────────────────────────────────
@@ -174,6 +182,9 @@ STARPU_CHAPTERS = [1, 2, 3, 4, 5, 6, 7, 9, 10, 13]
 # Parquet paths for time-series data
 PARQUET_TS_PRACTICE = os.path.join(DATA_DIR, "standardised_rates_practice.parquet")
 PARQUET_TS_LCG = os.path.join(DATA_DIR, "standardised_rates_lcg.parquet")
+PARQUET_TA_NI = os.path.join(DATA_DIR, "therapeutic_area_ni_monthly.parquet")
+PARQUET_TA_PRACTICE = os.path.join(DATA_DIR, "therapeutic_area_practice_monthly.parquet")
+PARQUET_STARPU_PRACTICE = os.path.join(DATA_DIR, "starpu_denominators_practice.parquet")
 PARQUET_PRESC_PRACTICE = os.path.join(DATA_DIR, "prescribing_practice_monthly.parquet")
 PARQUET_PRESC_LCG = os.path.join(DATA_DIR, "prescribing_lcg_monthly.parquet")
 
@@ -520,6 +531,52 @@ def load_timeseries_practice():
         df["chapter_name"] = df["bnf_chapter"].map(BNF_CHAPTERS).fillna("Unknown")
         return df
     return None
+
+
+@st.cache_data(show_spinner="Loading therapeutic area time-series…")
+def load_ta_ni():
+    """Load NI-level monthly therapeutic area time series."""
+    if os.path.exists(PARQUET_TA_NI):
+        df = pd.read_parquet(PARQUET_TA_NI)
+        df["year"] = df["year"].astype(int)
+        df["month"] = df["month"].astype(int)
+        df["date"] = pd.to_datetime(
+            df["year"].astype(str) + "-" + df["month"].astype(str).str.zfill(2) + "-01"
+        )
+        return df
+    return None
+
+
+@st.cache_data(show_spinner="Loading therapeutic area practice data…")
+def load_ta_practice():
+    """Load practice-level monthly therapeutic area time series."""
+    if os.path.exists(PARQUET_TA_PRACTICE):
+        df = pd.read_parquet(PARQUET_TA_PRACTICE)
+        df["year"] = df["year"].astype(int)
+        df["month"] = df["month"].astype(int)
+        df["date"] = pd.to_datetime(
+            df["year"].astype(str) + "-" + df["month"].astype(str).str.zfill(2) + "-01"
+        )
+        return df
+    return None
+
+
+@st.cache_data(show_spinner="Loading STAR-PU denominators…")
+def load_starpu_practice():
+    """Load practice-level STAR-PU denominators by year and chapter."""
+    if os.path.exists(PARQUET_STARPU_PRACTICE):
+        return pd.read_parquet(PARQUET_STARPU_PRACTICE)
+    return None
+
+
+# Map therapeutic areas to their parent BNF chapter (for STAR-PU lookups)
+TA_TO_CHAPTER = {
+    "Statins": 2, "Ezetimibe": 2, "Anticoagulants": 2, "Antihypertensives": 2,
+    "PPIs": 1, "UTI antibiotics": 5,
+    "Antidepressants": 4, "Gabapentinoids": 4, "Opioids": 4,
+    "Diabetes (non-insulin)": 6, "SGLT2 inhibitors": 6, "GLP-1 agonists": 6,
+    "DPP-4 inhibitors": 6, "HRT": 6,
+}
 
 
 # ════════════════════════════════════════════════════════════════════════
@@ -1377,6 +1434,133 @@ drug groupings, deprivation mapping, and limitations.
                     fig3.tight_layout()
                     st.pyplot(fig3)
                     plt.close(fig3)
+
+            # ── Therapeutic area time series ──────────────────────────────
+            st.markdown("---")
+            st.subheader("Therapeutic area trends")
+            ta_ni = load_ta_ni()
+            ta_practice = load_ta_practice()
+            starpu_prac = load_starpu_practice()
+
+            if ta_ni is not None:
+                ta_areas = sorted(ta_ni["therapeutic_area"].unique())
+                ta_selected = st.selectbox(
+                    "Therapeutic area",
+                    ta_areas,
+                    index=ta_areas.index("Statins") if "Statins" in ta_areas else 0,
+                    key="trends_ta_select",
+                )
+
+                ta_data = ta_ni[ta_ni["therapeutic_area"] == ta_selected].sort_values("date")
+
+                # Per-capita: get NI total population per year from STAR-PU denominators
+                if starpu_prac is not None:
+                    # Use one chapter (Ch 1) to get population without double-counting
+                    ni_pop = starpu_prac[starpu_prac["bnf_chapter"] == 1].groupby("year")["total_population"].sum().reset_index()
+                    ni_pop.columns = ["year", "ni_population"]
+                    ta_data = ta_data.merge(ni_pop, on="year", how="left")
+                    # For 2013, use 2014 population as proxy
+                    if ta_data["ni_population"].isna().any():
+                        _fill_pop = ni_pop["ni_population"].iloc[0] if len(ni_pop) > 0 else None
+                        if _fill_pop:
+                            ta_data["ni_population"] = ta_data["ni_population"].fillna(_fill_pop)
+
+                    if ts_metric == "items":
+                        ta_data["rate"] = ta_data["total_items"] / ta_data["ni_population"] * 1000
+                        ta_rate_label = "Items per 1,000 patients"
+                    else:
+                        ta_data["rate"] = ta_data["total_cost"] / ta_data["ni_population"] * 1000
+                        ta_rate_label = "Cost (£) per 1,000 patients"
+                else:
+                    # Fallback: raw totals
+                    ta_data["rate"] = ta_data["total_items"] if ts_metric == "items" else ta_data["total_cost"]
+                    ta_rate_label = "Total items" if ts_metric == "items" else "Total cost (£)"
+
+                import datetime as _dt_ta
+
+                fig_ta, ax_ta = plt.subplots(figsize=(12, 4))
+                if smooth_window > 1:
+                    ta_data["rate_smooth"] = ta_data["rate"].rolling(window=smooth_window, min_periods=smooth_window).mean()
+                    ax_ta.plot(ta_data["date"], ta_data["rate"], color="#2563eb", linewidth=0.4, alpha=0.3)
+                    ax_ta.plot(ta_data["date"], ta_data["rate_smooth"], color="#2563eb", linewidth=2)
+                else:
+                    ax_ta.plot(ta_data["date"], ta_data["rate"], color="#2563eb", linewidth=1.5)
+                ax_ta.set_ylabel(ta_rate_label, fontsize=10)
+                ax_ta.set_xlabel("")
+                ax_ta.set_title(f"{ta_selected} – NI trend", fontsize=12, fontweight="bold")
+                ax_ta.grid(axis="y", alpha=0.3)
+                ax_ta.spines["top"].set_visible(False)
+                ax_ta.spines["right"].set_visible(False)
+                ax_ta.axvspan(_dt_ta.datetime(2020, 3, 1), _dt_ta.datetime(2021, 6, 1),
+                             alpha=0.08, color="red", label="COVID-19")
+                ax_ta.legend(fontsize=8, loc="upper left")
+                fig_ta.tight_layout()
+                st.pyplot(fig_ta)
+                plt.close(fig_ta)
+
+                # Practice-level overlay for therapeutic area
+                if ta_practice is not None and highlight_pracnos and starpu_prac is not None:
+                    ta_prac = ta_practice[ta_practice["therapeutic_area"] == ta_selected].copy()
+                    # Get parent chapter for STAR-PU denominator
+                    ta_chapter = TA_TO_CHAPTER.get(ta_selected)
+
+                    if ta_chapter and not ta_prac.empty:
+                        # Merge STAR-PU denominators
+                        sp_ch = starpu_prac[starpu_prac["bnf_chapter"] == ta_chapter][["year", "practice", "total_population"]].copy()
+                        ta_prac = ta_prac.merge(sp_ch, on=["year", "practice"], how="left")
+
+                        fig_tap, ax_tap = plt.subplots(figsize=(12, 5))
+                        colours_tap = plt.cm.Set1(np.linspace(0, 1, max(len(highlight_pracnos), 8)))
+
+                        for idx_p, pno in enumerate(highlight_pracnos[:5]):
+                            pno_int = int(pno) if str(pno).isdigit() else pno
+                            ps = ta_prac[ta_prac["practice"] == pno_int].sort_values("date").copy()
+                            if ps.empty or ps["total_population"].isna().all():
+                                continue
+                            if ts_metric == "items":
+                                ps["rate"] = ps["total_items"] / ps["total_population"] * 1000
+                            else:
+                                ps["rate"] = ps["total_cost"] / ps["total_population"] * 1000
+
+                            plabel = pracno_to_label.get(str(pno), str(pno))
+                            if len(plabel) > 40:
+                                plabel = plabel[:37] + "…"
+                            if smooth_window > 1:
+                                ps["rate_smooth"] = ps["rate"].rolling(window=smooth_window, min_periods=smooth_window).mean()
+                                ax_tap.plot(ps["date"], ps["rate"], color=colours_tap[idx_p], linewidth=0.3, alpha=0.15)
+                                ax_tap.plot(ps["date"], ps["rate_smooth"],
+                                           label=plabel, color=colours_tap[idx_p], linewidth=1.8)
+                            else:
+                                ax_tap.plot(ps["date"], ps["rate"],
+                                           label=plabel, color=colours_tap[idx_p], linewidth=1.2)
+
+                        # NI average line
+                        if smooth_window > 1 and "rate_smooth" in ta_data.columns:
+                            ax_tap.plot(ta_data["date"], ta_data["rate_smooth"],
+                                       color="#999999", linewidth=1.5, linestyle=":", label="NI average")
+                        else:
+                            ax_tap.plot(ta_data["date"], ta_data["rate"],
+                                       color="#999999", linewidth=1.5, linestyle=":", label="NI average")
+
+                        ax_tap.set_ylabel(ta_rate_label, fontsize=10)
+                        ax_tap.set_xlabel("")
+                        ax_tap.set_title(f"{ta_selected} – practice comparison", fontsize=12, fontweight="bold")
+                        ax_tap.grid(axis="y", alpha=0.3)
+                        ax_tap.spines["top"].set_visible(False)
+                        ax_tap.spines["right"].set_visible(False)
+                        ax_tap.axvspan(_dt_ta.datetime(2020, 3, 1), _dt_ta.datetime(2021, 6, 1),
+                                      alpha=0.08, color="red")
+                        ax_tap.legend(fontsize=7, loc="best")
+                        fig_tap.tight_layout()
+                        st.pyplot(fig_tap)
+                        plt.close(fig_tap)
+
+                st.caption(
+                    "Rates are per 1,000 registered patients (raw, not age-sex standardised). "
+                    "Drug group definitions match the therapeutic areas in the sidebar."
+                )
+            else:
+                st.caption("Therapeutic area time-series data not available.")
 
             # ── Practice profile: multi-chapter panel ──────────────────────
             st.markdown("---")
