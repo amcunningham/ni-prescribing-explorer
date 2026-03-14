@@ -578,6 +578,18 @@ TA_TO_CHAPTER = {
     "DPP-4 inhibitors": 6, "HRT": 6,
 }
 
+# Map app-facing TA names (THERAPEUTIC_AREAS keys) to parquet TA names
+# (the build script used shorter names)
+TA_APP_TO_PARQUET = {
+    "Antidepressants (excl. TCAs)": "Antidepressants",
+    "GLP-1 receptor agonists": "GLP-1 agonists",
+    "Anticoagulants (oral)": "Anticoagulants",
+}
+# Also build TA_TO_CHAPTER entries for the app-facing names
+for _app_name, _pq_name in TA_APP_TO_PARQUET.items():
+    if _pq_name in TA_TO_CHAPTER:
+        TA_TO_CHAPTER[_app_name] = TA_TO_CHAPTER[_pq_name]
+
 
 # ════════════════════════════════════════════════════════════════════════
 # CHARTS
@@ -1034,7 +1046,9 @@ def main():
 
     # Determine view mode: therapeutic area vs BNF chapter
     _use_ta = (area_name != "All prescribing") and ta_ni is not None
-    _ta_name = area_name if area_name != "All prescribing" else None
+    _ta_name_display = area_name if area_name != "All prescribing" else None
+    # Map to parquet name (build script used shorter names for some TAs)
+    _ta_name = TA_APP_TO_PARQUET.get(_ta_name_display, _ta_name_display) if _ta_name_display else None
     if _use_ta and _ta_name and ta_ni is not None:
         _ta_available = _ta_name in ta_ni["therapeutic_area"].unique()
         if not _ta_available:
@@ -1144,7 +1158,7 @@ def main():
                     ax_ts.plot(ta_data["date"], ta_data["rate_smooth"], color="#2563eb", linewidth=2)
                 else:
                     ax_ts.plot(ta_data["date"], ta_data["rate"], color="#2563eb", linewidth=1.5)
-                ax_ts.set_title(f"Northern Ireland – {_ta_name}", fontsize=12, fontweight="bold")
+                ax_ts.set_title(f"Northern Ireland – {_ta_name_display}", fontsize=12, fontweight="bold")
                 ax_ts.set_ylabel(ta_rate_label, fontsize=10)
                 ax_ts.set_xlabel("")
                 ax_ts.set_ylim(bottom=0)
@@ -1554,7 +1568,7 @@ drug groupings, deprivation mapping, and limitations.
                                 ta_data_ni["rate"] = ta_data_ni["total_cost"] / ta_data_ni["ni_population"] * 1000
                                 _prac_rate_label = "Cost (£) per 1,000 patients"
 
-                        st.subheader(f"{_ta_name} – practice vs NI")
+                        st.subheader(f"{_ta_name_display} – practice vs NI")
                         fig_ta, ax_ta = plt.subplots(figsize=(12, 5))
                         colours_ta = plt.cm.Set1(np.linspace(0, 1, max(len(highlight_pracnos), 8)))
 
