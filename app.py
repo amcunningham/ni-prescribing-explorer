@@ -788,43 +788,54 @@ def main():
     # ════════════════════════════════════════════════════════════════════
     st.sidebar.header("Data & Analysis")
 
-    # 1. BNF CHAPTER (for time series) — moved to sidebar
+    # 1. UNIFIED DRUG / CHAPTER SELECTOR
+    # Build a single list: therapeutic areas first, then BNF chapters
     _ts_lcg_check = load_timeseries_lcg()
+    _unified_options = []  # list of (key, label) tuples
+    # — Therapeutic areas (prefix "ta:" to distinguish from chapters)
+    for _ta_key in THERAPEUTIC_AREAS:
+        _unified_options.append(("ta:" + _ta_key, _ta_key))
+    # — BNF chapters (prefix "ch:")
     if _ts_lcg_check is not None:
         _avail_chapters = sorted(_ts_lcg_check["bnf_chapter"].unique())
-        _chapter_opts = {0: "All prescribing (all chapters combined)"}
         for _ch in _avail_chapters:
             if _ch in BNF_CHAPTERS and _ch != 0:
                 _lbl = f"Ch {_ch}: {BNF_CHAPTERS[_ch]}"
                 if _ch in STARPU_CHAPTERS:
-                    _lbl += " *"
-                _chapter_opts[_ch] = _lbl
+                    _lbl += " ★"
+                _unified_options.append((f"ch:{_ch}", _lbl))
 
-        _chapter_opts_list = list(_chapter_opts.keys())
-        selected_chapter = st.sidebar.selectbox(
-            "BNF Chapter (for time series)",
-            _chapter_opts_list,
-            format_func=lambda x, _m=_chapter_opts: _m.get(x, str(x)),
-            index=0,
-            key="ts_chapter",
-        )
-    else:
-        selected_chapter = 0
+    _unified_keys = [k for k, _ in _unified_options]
+    _unified_labels = {k: v for k, v in _unified_options}
 
-    # 2. THERAPEUTIC AREA (cross-sectional) — kept for caterpillar/scatter
-    area_name = st.sidebar.selectbox(
-        "Therapeutic area (cross-sectional)",
-        list(THERAPEUTIC_AREAS.keys()),
+    _sidebar_selection = st.sidebar.selectbox(
+        "Prescribing area",
+        _unified_keys,
+        format_func=lambda x, _m=_unified_labels: _m.get(x, str(x)),
         index=0,
-        key="sidebar_ta",
+        key="sidebar_prescribing_area",
     )
-    area = THERAPEUTIC_AREAS[area_name]
-    st.sidebar.caption(area["description"])
 
-    # 3. INDIVIDUAL DRUG (overrides therapeutic area)
+    # Derive area_name, selected_chapter, and area from the unified selection
+    if _sidebar_selection.startswith("ta:"):
+        area_name = _sidebar_selection[3:]
+        area = THERAPEUTIC_AREAS[area_name]
+        # Map therapeutic area to its parent BNF chapter for STAR-PU lookups
+        selected_chapter = TA_TO_CHAPTER.get(area_name, 0)
+    else:
+        # BNF chapter selected
+        selected_chapter = int(_sidebar_selection[3:])
+        area_name = "All prescribing"
+        area = THERAPEUTIC_AREAS["All prescribing"]
+
+    # Show description for therapeutic areas
+    if area_name != "All prescribing":
+        st.sidebar.caption(area["description"])
+
+    # 2. INDIVIDUAL DRUG (overrides therapeutic area)
     all_drugs = sorted(merged["VTM_NM"].dropna().unique().tolist())
     sidebar_drug = st.sidebar.selectbox(
-        "Individual drug (overrides therapeutic area)",
+        "Individual drug (overrides selection above)",
         all_drugs,
         index=None,
         placeholder="Start typing to search…",
@@ -833,7 +844,7 @@ def main():
     if sidebar_drug:
         st.sidebar.caption(f"Showing: **{sidebar_drug}**")
 
-    # 4. METRIC
+    # 3. METRIC
     metric = st.sidebar.radio(
         "Metric",
         ["ItemsPerCapita", "CostPerCapita"],
@@ -841,9 +852,9 @@ def main():
     )
     label_metric = "Items per patient" if metric == "ItemsPerCapita" else "Cost (£) per patient"
 
-    # 5. RATE TYPE (Raw vs Standardised)
+    # 4. RATE TYPE (Raw vs Standardised) — only for BNF chapters with STAR-PU
     _has_starpu = selected_chapter in STARPU_CHAPTERS
-    if _has_starpu:
+    if _has_starpu and _sidebar_selection.startswith("ch:"):
         _rate_opts = ["Raw (per capita)", "Standardised (per STAR-PU)"]
         ts_rate = st.sidebar.radio(
             "Rate type",
@@ -853,7 +864,8 @@ def main():
         )
         use_starpu = "Standardised" in ts_rate
     else:
-        st.sidebar.info("ℹ️ No STAR-PU weighting for this chapter — raw rates only")
+        if _sidebar_selection.startswith("ch:") and not _has_starpu:
+            st.sidebar.info("ℹ️ No STAR-PU weighting for this chapter — raw rates only")
         use_starpu = False
 
     # 6. SMOOTHING (for time series)
@@ -1257,267 +1269,91 @@ drug groupings, deprivation mapping, and limitations.
             st.header("Prescribing Trends Over Time")
             st.caption("Monthly data from April 2013 to January 2026 (154 months)")
 
-            # ── Filter and aggregate data ──
-            if selected_chapter == 0:
-                # Aggregate across all chapters
-                lcg_data = ts_lcg.groupby(["lcg", "date", "year", "month"]).agg(
-                    total_items=("total_items", "sum"),
-                    total_cost=("total_cost", "sum"),
-                    starpu=("starpu", "sum"),
-                ).reset_index()
-                if ts_practice is not None:
-                    prac_data = ts_practice.groupby(["practice", "date", "year", "month"]).agg(
-                        total_items=("total_items", "sum"),
-                        total_cost=("total_cost", "sum"),
-                        starpu=("starpu", "sum"),
-                        total_population=("total_population", "first"),
-                    ).reset_index()
-            else:
-                lcg_data = ts_lcg[ts_lcg["bnf_chapter"] == selected_chapter].copy()
-                if ts_practice is not None:
-                    prac_data = ts_practice[ts_practice["bnf_chapter"] == selected_chapter].copy()
-
-            # Compute rate columns for LCG data
-            ts_metric = st.sidebar.radio(
-                "Time series metric",
-                ["items", "cost"],
-                format_func=lambda x: "Items" if x == "items" else "Cost (£)",
-                key="trends_tab_metric",
-            )
-
-            if ts_metric == "items":
-                if use_starpu:
-                    lcg_data["rate"] = lcg_data["total_items"] / lcg_data["starpu"]
-                    rate_label = "Items per STAR-PU"
-                else:
-                    lcg_data["rate"] = lcg_data["total_items"] / lcg_data["starpu"]
-                    rate_label = "Items per STAR-PU (population-adjusted)"
-            else:
-                if use_starpu:
-                    lcg_data["rate"] = lcg_data["total_cost"] / lcg_data["starpu"]
-                    rate_label = "Cost (£) per STAR-PU"
-                else:
-                    lcg_data["rate"] = lcg_data["total_cost"] / lcg_data["starpu"]
-                    rate_label = "Cost (£) per STAR-PU"
-
-            # NI-wide aggregate
-            ni_data = lcg_data.groupby(["date", "year", "month"]).agg(
-                total_items=("total_items", "sum"),
-                total_cost=("total_cost", "sum"),
-                starpu=("starpu", "sum"),
-            ).reset_index()
-            if ts_metric == "items":
-                ni_data["rate"] = ni_data["total_items"] / ni_data["starpu"]
-            else:
-                ni_data["rate"] = ni_data["total_cost"] / ni_data["starpu"]
-            ni_data = ni_data.sort_values("date")
-
-            chapter_title = "All prescribing" if selected_chapter == 0 else BNF_CHAPTERS.get(selected_chapter, f"Chapter {selected_chapter}")
-
-            # ── Chart 1: NI-wide trend ──
-            st.subheader(f"Northern Ireland – {chapter_title}")
-            fig1, ax1 = plt.subplots(figsize=(12, 4))
-            if smooth_window > 1:
-                ni_data["rate_smooth"] = ni_data["rate"].rolling(window=smooth_window, min_periods=smooth_window).mean()
-                ax1.plot(ni_data["date"], ni_data["rate"], color="#2563eb", linewidth=0.4, alpha=0.3)
-                ax1.plot(ni_data["date"], ni_data["rate_smooth"], color="#2563eb", linewidth=2)
-            else:
-                ax1.plot(ni_data["date"], ni_data["rate"], color="#2563eb", linewidth=1.5)
-            ax1.set_ylabel(rate_label, fontsize=10)
-            ax1.set_xlabel("")
-            ax1.grid(axis="y", alpha=0.3)
-            ax1.spines["top"].set_visible(False)
-            ax1.spines["right"].set_visible(False)
-            # Shade COVID period
             import datetime
             covid_start = datetime.datetime(2020, 3, 1)
             covid_end = datetime.datetime(2021, 6, 1)
-            ax1.axvspan(covid_start, covid_end, alpha=0.08, color="red", label="COVID-19 period")
-            ax1.legend(fontsize=8, loc="upper left")
-            fig1.tight_layout()
-            st.pyplot(fig1)
-            plt.close(fig1)
 
-            # ── Chart 2: LCG comparison ──
-            st.subheader(f"By Local Commissioning Group")
-            lcg_colours = {
-                "Belfast": "#e11d48",
-                "Northern": "#2563eb",
-                "South Eastern": "#16a34a",
-                "Southern": "#d97706",
-                "Western": "#7c3aed",
-            }
-            fig2, ax2 = plt.subplots(figsize=(12, 5))
-            for lcg_name in sorted(lcg_data["lcg"].unique()):
-                lcg_subset = lcg_data[lcg_data["lcg"] == lcg_name].sort_values("date")
-                colour = lcg_colours.get(lcg_name, "#666666")
-                if smooth_window > 1:
-                    lcg_subset = lcg_subset.copy()
-                    lcg_subset["rate_smooth"] = lcg_subset["rate"].rolling(window=smooth_window, min_periods=smooth_window).mean()
-                    ax2.plot(lcg_subset["date"], lcg_subset["rate"], color=colour, linewidth=0.3, alpha=0.15)
-                    ax2.plot(lcg_subset["date"], lcg_subset["rate_smooth"],
-                             label=lcg_name, color=colour, linewidth=1.8, alpha=0.9)
-                else:
-                    ax2.plot(lcg_subset["date"], lcg_subset["rate"],
-                             label=lcg_name, color=colour, linewidth=1.2, alpha=0.85)
-
-            ax2.set_ylabel(rate_label, fontsize=10)
-            ax2.set_xlabel("")
-            ax2.grid(axis="y", alpha=0.3)
-            ax2.spines["top"].set_visible(False)
-            ax2.spines["right"].set_visible(False)
-            ax2.axvspan(covid_start, covid_end, alpha=0.08, color="red")
-            ax2.legend(fontsize=9, loc="best")
-            fig2.tight_layout()
-            st.pyplot(fig2)
-            plt.close(fig2)
-
-            # ── Chart 3: Practice-level overlay ──
-            if ts_practice is not None:
-                st.subheader("Highlighted practices overlay")
-                if highlight_pracnos:
-                    st.caption("Showing practices selected in the sidebar under 'Highlight practices'.")
-                else:
-                    st.caption("Use the **Highlight practices** selector in the sidebar to pick practices to compare here.")
-
-                if highlight_pracnos:
-                    selected_prac_nos = [int(p) if str(p).isdigit() else p for p in highlight_pracnos]
-
-                    fig3, ax3 = plt.subplots(figsize=(12, 5))
-                    colours3 = plt.cm.Set1(np.linspace(0, 1, max(len(selected_prac_nos), 8)))
-
-                    for idx, pno in enumerate(selected_prac_nos):
-                        prac_subset = prac_data[prac_data["practice"] == pno].sort_values("date")
-                        if prac_subset.empty:
-                            continue
-
-                        # Compute rate
-                        if ts_metric == "items":
-                            if use_starpu:
-                                prac_subset = prac_subset.copy()
-                                prac_subset["rate"] = prac_subset["total_items"] / prac_subset["starpu"]
-                            else:
-                                prac_subset = prac_subset.copy()
-                                prac_subset["rate"] = prac_subset["total_items"] / prac_subset["total_population"]
-                        else:
-                            if use_starpu:
-                                prac_subset = prac_subset.copy()
-                                prac_subset["rate"] = prac_subset["total_cost"] / prac_subset["starpu"]
-                            else:
-                                prac_subset = prac_subset.copy()
-                                prac_subset["rate"] = prac_subset["total_cost"] / prac_subset["total_population"]
-
-                        label = pracno_to_label.get(str(pno), str(pno))
-                        # Truncate long labels
-                        if len(label) > 40:
-                            label = label[:37] + "…"
-                        if smooth_window > 1:
-                            prac_subset["rate_smooth"] = prac_subset["rate"].rolling(window=smooth_window, min_periods=smooth_window).mean()
-                            ax3.plot(prac_subset["date"], prac_subset["rate"], color=colours3[idx], linewidth=0.3, alpha=0.15)
-                            ax3.plot(prac_subset["date"], prac_subset["rate_smooth"],
-                                     label=label, color=colours3[idx], linewidth=1.8)
-                        else:
-                            ax3.plot(prac_subset["date"], prac_subset["rate"],
-                                     label=label, color=colours3[idx], linewidth=1.2)
-
-                    rate_label_prac = rate_label
-                    if not use_starpu:
-                        rate_label_prac = "Items per patient" if ts_metric == "items" else "Cost (£) per patient"
-
-                    ax3.set_ylabel(rate_label_prac, fontsize=10)
-                    ax3.set_xlabel("")
-                    ax3.grid(axis="y", alpha=0.3)
-                    ax3.spines["top"].set_visible(False)
-                    ax3.spines["right"].set_visible(False)
-                    ax3.axvspan(covid_start, covid_end, alpha=0.08, color="red")
-                    ax3.legend(fontsize=7, loc="best")
-                    fig3.tight_layout()
-                    st.pyplot(fig3)
-                    plt.close(fig3)
-
-            # ── Therapeutic area time series ──────────────────────────────
-            st.markdown("---")
-            st.subheader("Therapeutic area trends")
+            # Load therapeutic area time series
             ta_ni = load_ta_ni()
             ta_practice = load_ta_practice()
             starpu_prac = load_starpu_practice()
 
-            if ta_ni is not None:
-                ta_areas = sorted(ta_ni["therapeutic_area"].unique())
-                ta_selected = st.selectbox(
-                    "Therapeutic area",
-                    ta_areas,
-                    index=ta_areas.index("Statins") if "Statins" in ta_areas else 0,
-                    key="trends_ta_select",
-                )
+            # Determine what to show: therapeutic area takes priority over BNF chapter
+            _use_ta = (area_name != "All prescribing" or sidebar_drug) and ta_ni is not None
+            _ta_name = area_name if area_name != "All prescribing" else None
 
-                ta_data = ta_ni[ta_ni["therapeutic_area"] == ta_selected].sort_values("date")
+            # Check if the therapeutic area exists in the time series data
+            if _use_ta and _ta_name and ta_ni is not None:
+                _ta_available = _ta_name in ta_ni["therapeutic_area"].unique()
+                if not _ta_available:
+                    _use_ta = False  # fall back to BNF chapter view
 
-                # Per-capita: get NI total population per year from STAR-PU denominators
+            if _use_ta and _ta_name and ta_ni is not None:
+                # ══════════════════════════════════════════════════════════
+                # THERAPEUTIC AREA TIME SERIES
+                # ══════════════════════════════════════════════════════════
+                ta_data = ta_ni[ta_ni["therapeutic_area"] == _ta_name].sort_values("date")
+
+                # Per-capita using NI population
                 if starpu_prac is not None:
-                    # Use one chapter (Ch 1) to get population without double-counting
                     ni_pop = starpu_prac[starpu_prac["bnf_chapter"] == 1].groupby("year")["total_population"].sum().reset_index()
                     ni_pop.columns = ["year", "ni_population"]
                     ta_data = ta_data.merge(ni_pop, on="year", how="left")
-                    # For 2013, use 2014 population as proxy
                     if ta_data["ni_population"].isna().any():
                         _fill_pop = ni_pop["ni_population"].iloc[0] if len(ni_pop) > 0 else None
                         if _fill_pop:
                             ta_data["ni_population"] = ta_data["ni_population"].fillna(_fill_pop)
 
-                    if ts_metric == "items":
+                    if metric == "ItemsPerCapita":
                         ta_data["rate"] = ta_data["total_items"] / ta_data["ni_population"] * 1000
                         ta_rate_label = "Items per 1,000 patients"
                     else:
                         ta_data["rate"] = ta_data["total_cost"] / ta_data["ni_population"] * 1000
                         ta_rate_label = "Cost (£) per 1,000 patients"
                 else:
-                    # Fallback: raw totals
-                    ta_data["rate"] = ta_data["total_items"] if ts_metric == "items" else ta_data["total_cost"]
-                    ta_rate_label = "Total items" if ts_metric == "items" else "Total cost (£)"
+                    ta_data["rate"] = ta_data["total_items"] if metric == "ItemsPerCapita" else ta_data["total_cost"]
+                    ta_rate_label = "Total items" if metric == "ItemsPerCapita" else "Total cost (£)"
 
-                import datetime as _dt_ta
-
-                fig_ta, ax_ta = plt.subplots(figsize=(12, 4))
+                # ── Chart 1: NI-wide therapeutic area trend ──
+                st.subheader(f"Northern Ireland – {_ta_name}")
+                fig1, ax1 = plt.subplots(figsize=(12, 4))
                 if smooth_window > 1:
                     ta_data["rate_smooth"] = ta_data["rate"].rolling(window=smooth_window, min_periods=smooth_window).mean()
-                    ax_ta.plot(ta_data["date"], ta_data["rate"], color="#2563eb", linewidth=0.4, alpha=0.3)
-                    ax_ta.plot(ta_data["date"], ta_data["rate_smooth"], color="#2563eb", linewidth=2)
+                    ax1.plot(ta_data["date"], ta_data["rate"], color="#2563eb", linewidth=0.4, alpha=0.3)
+                    ax1.plot(ta_data["date"], ta_data["rate_smooth"], color="#2563eb", linewidth=2)
                 else:
-                    ax_ta.plot(ta_data["date"], ta_data["rate"], color="#2563eb", linewidth=1.5)
-                ax_ta.set_ylabel(ta_rate_label, fontsize=10)
-                ax_ta.set_xlabel("")
-                ax_ta.set_title(f"{ta_selected} – NI trend", fontsize=12, fontweight="bold")
-                ax_ta.grid(axis="y", alpha=0.3)
-                ax_ta.spines["top"].set_visible(False)
-                ax_ta.spines["right"].set_visible(False)
-                ax_ta.axvspan(_dt_ta.datetime(2020, 3, 1), _dt_ta.datetime(2021, 6, 1),
-                             alpha=0.08, color="red", label="COVID-19")
-                ax_ta.legend(fontsize=8, loc="upper left")
-                fig_ta.tight_layout()
-                st.pyplot(fig_ta)
-                plt.close(fig_ta)
+                    ax1.plot(ta_data["date"], ta_data["rate"], color="#2563eb", linewidth=1.5)
+                ax1.set_ylabel(ta_rate_label, fontsize=10)
+                ax1.set_xlabel("")
+                ax1.set_ylim(bottom=0)
+                ax1.grid(axis="y", alpha=0.3)
+                ax1.spines["top"].set_visible(False)
+                ax1.spines["right"].set_visible(False)
+                ax1.axvspan(covid_start, covid_end, alpha=0.08, color="red", label="COVID-19 period")
+                ax1.legend(fontsize=8, loc="upper left")
+                fig1.tight_layout()
+                st.pyplot(fig1)
+                plt.close(fig1)
 
-                # Practice-level overlay for therapeutic area
+                # ── Chart 2: Practice-level overlay for therapeutic area ──
                 if ta_practice is not None and highlight_pracnos and starpu_prac is not None:
-                    ta_prac = ta_practice[ta_practice["therapeutic_area"] == ta_selected].copy()
-                    # Get parent chapter for STAR-PU denominator
-                    ta_chapter = TA_TO_CHAPTER.get(ta_selected)
+                    ta_prac = ta_practice[ta_practice["therapeutic_area"] == _ta_name].copy()
+                    ta_chapter = TA_TO_CHAPTER.get(_ta_name)
 
                     if ta_chapter and not ta_prac.empty:
-                        # Merge STAR-PU denominators
                         sp_ch = starpu_prac[starpu_prac["bnf_chapter"] == ta_chapter][["year", "practice", "total_population"]].copy()
                         ta_prac = ta_prac.merge(sp_ch, on=["year", "practice"], how="left")
 
-                        fig_tap, ax_tap = plt.subplots(figsize=(12, 5))
-                        colours_tap = plt.cm.Set1(np.linspace(0, 1, max(len(highlight_pracnos), 8)))
+                        st.subheader(f"{_ta_name} – practice comparison")
+                        fig2, ax2 = plt.subplots(figsize=(12, 5))
+                        colours2 = plt.cm.Set1(np.linspace(0, 1, max(len(highlight_pracnos), 8)))
 
                         for idx_p, pno in enumerate(highlight_pracnos[:5]):
                             pno_int = int(pno) if str(pno).isdigit() else pno
                             ps = ta_prac[ta_prac["practice"] == pno_int].sort_values("date").copy()
                             if ps.empty or ps["total_population"].isna().all():
                                 continue
-                            if ts_metric == "items":
+                            if metric == "ItemsPerCapita":
                                 ps["rate"] = ps["total_items"] / ps["total_population"] * 1000
                             else:
                                 ps["rate"] = ps["total_cost"] / ps["total_population"] * 1000
@@ -1527,40 +1363,198 @@ drug groupings, deprivation mapping, and limitations.
                                 plabel = plabel[:37] + "…"
                             if smooth_window > 1:
                                 ps["rate_smooth"] = ps["rate"].rolling(window=smooth_window, min_periods=smooth_window).mean()
-                                ax_tap.plot(ps["date"], ps["rate"], color=colours_tap[idx_p], linewidth=0.3, alpha=0.15)
-                                ax_tap.plot(ps["date"], ps["rate_smooth"],
-                                           label=plabel, color=colours_tap[idx_p], linewidth=1.8)
+                                ax2.plot(ps["date"], ps["rate"], color=colours2[idx_p], linewidth=0.3, alpha=0.15)
+                                ax2.plot(ps["date"], ps["rate_smooth"],
+                                        label=plabel, color=colours2[idx_p], linewidth=1.8)
                             else:
-                                ax_tap.plot(ps["date"], ps["rate"],
-                                           label=plabel, color=colours_tap[idx_p], linewidth=1.2)
+                                ax2.plot(ps["date"], ps["rate"],
+                                        label=plabel, color=colours2[idx_p], linewidth=1.2)
 
                         # NI average line
                         if smooth_window > 1 and "rate_smooth" in ta_data.columns:
-                            ax_tap.plot(ta_data["date"], ta_data["rate_smooth"],
-                                       color="#999999", linewidth=1.5, linestyle=":", label="NI average")
+                            ax2.plot(ta_data["date"], ta_data["rate_smooth"],
+                                    color="#999999", linewidth=1.5, linestyle=":", label="NI average")
                         else:
-                            ax_tap.plot(ta_data["date"], ta_data["rate"],
-                                       color="#999999", linewidth=1.5, linestyle=":", label="NI average")
+                            ax2.plot(ta_data["date"], ta_data["rate"],
+                                    color="#999999", linewidth=1.5, linestyle=":", label="NI average")
 
-                        ax_tap.set_ylabel(ta_rate_label, fontsize=10)
-                        ax_tap.set_xlabel("")
-                        ax_tap.set_title(f"{ta_selected} – practice comparison", fontsize=12, fontweight="bold")
-                        ax_tap.grid(axis="y", alpha=0.3)
-                        ax_tap.spines["top"].set_visible(False)
-                        ax_tap.spines["right"].set_visible(False)
-                        ax_tap.axvspan(_dt_ta.datetime(2020, 3, 1), _dt_ta.datetime(2021, 6, 1),
-                                      alpha=0.08, color="red")
-                        ax_tap.legend(fontsize=7, loc="best")
-                        fig_tap.tight_layout()
-                        st.pyplot(fig_tap)
-                        plt.close(fig_tap)
+                        ax2.set_ylabel(ta_rate_label, fontsize=10)
+                        ax2.set_xlabel("")
+                        ax2.set_ylim(bottom=0)
+                        ax2.grid(axis="y", alpha=0.3)
+                        ax2.spines["top"].set_visible(False)
+                        ax2.spines["right"].set_visible(False)
+                        ax2.axvspan(covid_start, covid_end, alpha=0.08, color="red")
+                        ax2.legend(fontsize=7, loc="best")
+                        fig2.tight_layout()
+                        st.pyplot(fig2)
+                        plt.close(fig2)
+                elif highlight_pracnos:
+                    st.caption("Select a therapeutic area (not 'All prescribing') to see practice-level comparisons.")
+                else:
+                    st.caption("Use **Highlight practices** in the sidebar to compare practices.")
 
                 st.caption(
                     "Rates are per 1,000 registered patients (raw, not age-sex standardised). "
                     "Drug group definitions match the therapeutic areas in the sidebar."
                 )
+
             else:
-                st.caption("Therapeutic area time-series data not available.")
+                # ══════════════════════════════════════════════════════════
+                # BNF CHAPTER TIME SERIES (default view)
+                # ══════════════════════════════════════════════════════════
+                if selected_chapter == 0:
+                    lcg_data = ts_lcg.groupby(["lcg", "date", "year", "month"]).agg(
+                        total_items=("total_items", "sum"),
+                        total_cost=("total_cost", "sum"),
+                        starpu=("starpu", "sum"),
+                    ).reset_index()
+                    if ts_practice is not None:
+                        prac_data = ts_practice.groupby(["practice", "date", "year", "month"]).agg(
+                            total_items=("total_items", "sum"),
+                            total_cost=("total_cost", "sum"),
+                            starpu=("starpu", "sum"),
+                            total_population=("total_population", "first"),
+                        ).reset_index()
+                else:
+                    lcg_data = ts_lcg[ts_lcg["bnf_chapter"] == selected_chapter].copy()
+                    if ts_practice is not None:
+                        prac_data = ts_practice[ts_practice["bnf_chapter"] == selected_chapter].copy()
+
+                ts_metric_val = "items" if metric == "ItemsPerCapita" else "cost"
+
+                if ts_metric_val == "items":
+                    lcg_data["rate"] = lcg_data["total_items"] / lcg_data["starpu"]
+                    rate_label = "Items per STAR-PU"
+                else:
+                    lcg_data["rate"] = lcg_data["total_cost"] / lcg_data["starpu"]
+                    rate_label = "Cost (£) per STAR-PU"
+
+                # NI-wide aggregate
+                ni_data = lcg_data.groupby(["date", "year", "month"]).agg(
+                    total_items=("total_items", "sum"),
+                    total_cost=("total_cost", "sum"),
+                    starpu=("starpu", "sum"),
+                ).reset_index()
+                if ts_metric_val == "items":
+                    ni_data["rate"] = ni_data["total_items"] / ni_data["starpu"]
+                else:
+                    ni_data["rate"] = ni_data["total_cost"] / ni_data["starpu"]
+                ni_data = ni_data.sort_values("date")
+
+                chapter_title = "All prescribing" if selected_chapter == 0 else BNF_CHAPTERS.get(selected_chapter, f"Chapter {selected_chapter}")
+
+                # ── Chart 1: NI-wide trend ──
+                st.subheader(f"Northern Ireland – {chapter_title}")
+                fig1, ax1 = plt.subplots(figsize=(12, 4))
+                if smooth_window > 1:
+                    ni_data["rate_smooth"] = ni_data["rate"].rolling(window=smooth_window, min_periods=smooth_window).mean()
+                    ax1.plot(ni_data["date"], ni_data["rate"], color="#2563eb", linewidth=0.4, alpha=0.3)
+                    ax1.plot(ni_data["date"], ni_data["rate_smooth"], color="#2563eb", linewidth=2)
+                else:
+                    ax1.plot(ni_data["date"], ni_data["rate"], color="#2563eb", linewidth=1.5)
+                ax1.set_ylabel(rate_label, fontsize=10)
+                ax1.set_xlabel("")
+                ax1.set_ylim(bottom=0)
+                ax1.grid(axis="y", alpha=0.3)
+                ax1.spines["top"].set_visible(False)
+                ax1.spines["right"].set_visible(False)
+                ax1.axvspan(covid_start, covid_end, alpha=0.08, color="red", label="COVID-19 period")
+                ax1.legend(fontsize=8, loc="upper left")
+                fig1.tight_layout()
+                st.pyplot(fig1)
+                plt.close(fig1)
+
+                # ── Chart 2: LCG comparison ──
+                st.subheader(f"By Local Commissioning Group")
+                lcg_colours = {
+                    "Belfast": "#e11d48",
+                    "Northern": "#2563eb",
+                    "South Eastern": "#16a34a",
+                    "Southern": "#d97706",
+                    "Western": "#7c3aed",
+                }
+                fig2, ax2 = plt.subplots(figsize=(12, 5))
+                for lcg_name in sorted(lcg_data["lcg"].unique()):
+                    lcg_subset = lcg_data[lcg_data["lcg"] == lcg_name].sort_values("date")
+                    colour = lcg_colours.get(lcg_name, "#666666")
+                    if smooth_window > 1:
+                        lcg_subset = lcg_subset.copy()
+                        lcg_subset["rate_smooth"] = lcg_subset["rate"].rolling(window=smooth_window, min_periods=smooth_window).mean()
+                        ax2.plot(lcg_subset["date"], lcg_subset["rate"], color=colour, linewidth=0.3, alpha=0.15)
+                        ax2.plot(lcg_subset["date"], lcg_subset["rate_smooth"],
+                                 label=lcg_name, color=colour, linewidth=1.8, alpha=0.9)
+                    else:
+                        ax2.plot(lcg_subset["date"], lcg_subset["rate"],
+                                 label=lcg_name, color=colour, linewidth=1.2, alpha=0.85)
+
+                ax2.set_ylabel(rate_label, fontsize=10)
+                ax2.set_xlabel("")
+                ax2.set_ylim(bottom=0)
+                ax2.grid(axis="y", alpha=0.3)
+                ax2.spines["top"].set_visible(False)
+                ax2.spines["right"].set_visible(False)
+                ax2.axvspan(covid_start, covid_end, alpha=0.08, color="red")
+                ax2.legend(fontsize=9, loc="best")
+                fig2.tight_layout()
+                st.pyplot(fig2)
+                plt.close(fig2)
+
+                # ── Chart 3: Practice-level overlay ──
+                if ts_practice is not None:
+                    st.subheader("Highlighted practices overlay")
+                    if highlight_pracnos:
+                        st.caption("Showing practices selected in the sidebar.")
+                    else:
+                        st.caption("Use **Highlight practices** in the sidebar to pick practices to compare.")
+
+                    if highlight_pracnos:
+                        selected_prac_nos = [int(p) if str(p).isdigit() else p for p in highlight_pracnos]
+
+                        fig3, ax3 = plt.subplots(figsize=(12, 5))
+                        colours3 = plt.cm.Set1(np.linspace(0, 1, max(len(selected_prac_nos), 8)))
+
+                        for idx, pno in enumerate(selected_prac_nos):
+                            prac_subset = prac_data[prac_data["practice"] == pno].sort_values("date")
+                            if prac_subset.empty:
+                                continue
+                            prac_subset = prac_subset.copy()
+                            if ts_metric_val == "items":
+                                prac_subset["rate"] = prac_subset["total_items"] / prac_subset["starpu"]
+                            else:
+                                prac_subset["rate"] = prac_subset["total_cost"] / prac_subset["starpu"]
+
+                            label = pracno_to_label.get(str(pno), str(pno))
+                            if len(label) > 40:
+                                label = label[:37] + "…"
+                            if smooth_window > 1:
+                                prac_subset["rate_smooth"] = prac_subset["rate"].rolling(window=smooth_window, min_periods=smooth_window).mean()
+                                ax3.plot(prac_subset["date"], prac_subset["rate"], color=colours3[idx], linewidth=0.3, alpha=0.15)
+                                ax3.plot(prac_subset["date"], prac_subset["rate_smooth"],
+                                         label=label, color=colours3[idx], linewidth=1.8)
+                            else:
+                                ax3.plot(prac_subset["date"], prac_subset["rate"],
+                                         label=label, color=colours3[idx], linewidth=1.2)
+
+                        # NI average
+                        if smooth_window > 1:
+                            ax3.plot(ni_data["date"], ni_data["rate_smooth"],
+                                    color="#999999", linewidth=1.5, linestyle=":", label="NI average")
+                        else:
+                            ax3.plot(ni_data["date"], ni_data["rate"],
+                                    color="#999999", linewidth=1.5, linestyle=":", label="NI average")
+
+                        ax3.set_ylabel(rate_label, fontsize=10)
+                        ax3.set_xlabel("")
+                        ax3.set_ylim(bottom=0)
+                        ax3.grid(axis="y", alpha=0.3)
+                        ax3.spines["top"].set_visible(False)
+                        ax3.spines["right"].set_visible(False)
+                        ax3.axvspan(covid_start, covid_end, alpha=0.08, color="red")
+                        ax3.legend(fontsize=7, loc="best")
+                        fig3.tight_layout()
+                        st.pyplot(fig3)
+                        plt.close(fig3)
 
             # ── Practice profile: multi-chapter panel ──────────────────────
             st.markdown("---")
@@ -1606,7 +1600,7 @@ drug groupings, deprivation mapping, and limitations.
                     profile_chapters = [4, 2, 1, 6, 3, 13]
                     chapter_names_map = {4: "CNS", 2: "Cardiovascular", 1: "GI", 6: "Endocrine", 3: "Respiratory", 13: "Skin"}
 
-                    profile_ts_metric = ts_metric
+                    profile_ts_metric = "items" if metric == "ItemsPerCapita" else "cost"
                     profile_smooth_w = smooth_window
                     rate_col = "items_per_starpu" if profile_ts_metric == "items" else "cost_per_starpu"
                     rate_label_profile = "Items per STAR-PU" if profile_ts_metric == "items" else "Cost (£) per STAR-PU"
@@ -1663,15 +1657,16 @@ drug groupings, deprivation mapping, and limitations.
                                                    label=f"{pinfo['federation']} (10th–90th)")
                             _fed_bands_drawn.add(pinfo["federation"])
 
-                        # Practice line
-                        prac_ch = ch_data[ch_data["practice"] == pinfo["pracno_int"]].sort_values("date")
-                        if not prac_ch.empty:
-                            ax.plot(prac_ch["date"],
-                                    _smooth(prac_ch[rate_col], profile_smooth_w),
-                                    color=pinfo["colour"], linewidth=2,
-                                    label=pinfo["display"][:30])
+                            # Practice line (inside the for loop so all practices get drawn)
+                            prac_ch = ch_data[ch_data["practice"] == pinfo["pracno_int"]].sort_values("date")
+                            if not prac_ch.empty:
+                                ax.plot(prac_ch["date"],
+                                        _smooth(prac_ch[rate_col], profile_smooth_w),
+                                        color=pinfo["colour"], linewidth=2,
+                                        label=pinfo["display"][:30])
 
                         ax.set_title(ch_label, fontsize=11, fontweight="bold")
+                        ax.set_ylim(bottom=0)
                         ax.grid(axis="y", alpha=0.3)
                         ax.spines["top"].set_visible(False)
                         ax.spines["right"].set_visible(False)
