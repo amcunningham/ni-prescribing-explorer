@@ -979,15 +979,16 @@ def main():
     # ════════════════════════════════════════════════════════════════════
     # NEW 4-TAB STRUCTURE
     # ════════════════════════════════════════════════════════════════════
-    tab_names = ["Overview", "Practices", "Trends"]
+    tab_names = ["Overview", "Practices", "NI Trends", "Practice Profile"]
     if qof_df is not None or prev_df is not None:
         tab_names.append("QOF")
     tabs = st.tabs(tab_names)
     tab_overview = tabs[0]
     tab_practices = tabs[1]
     tab_trends = tabs[2]
+    tab_profile = tabs[3]
     if qof_df is not None or prev_df is not None:
-        tab_qof = tabs[3]
+        tab_qof = tabs[4]
     else:
         tab_qof = None
 
@@ -1264,39 +1265,36 @@ drug groupings, deprivation mapping, and limitations.
 
 
     # ════════════════════════════════════════════════════════════════════
-    # TAB 3: TRENDS
+    # TAB 3: NI TRENDS (national story only — no practice lines)
     # ════════════════════════════════════════════════════════════════════
+    import datetime as _dt
+    _covid_start = _dt.datetime(2020, 3, 1)
+    _covid_end = _dt.datetime(2021, 6, 1)
+
+    # Load therapeutic area & STAR-PU data (shared between NI Trends and Practice Profile)
+    ta_ni = load_ta_ni()
+    ta_practice = load_ta_practice()
+    starpu_prac = load_starpu_practice()
+
+    # Determine view mode: therapeutic area vs BNF chapter
+    _use_ta = (area_name != "All prescribing") and ta_ni is not None
+    _ta_name = area_name if area_name != "All prescribing" else None
+    if _use_ta and _ta_name and ta_ni is not None:
+        _ta_available = _ta_name in ta_ni["therapeutic_area"].unique()
+        if not _ta_available:
+            _use_ta = False
+
     if ts_lcg is not None:
         with tab_trends:
-            st.header("Prescribing Trends Over Time")
+            st.header("NI Prescribing Trends")
             st.caption("Monthly data from April 2013 to January 2026 (154 months)")
-
-            import datetime
-            covid_start = datetime.datetime(2020, 3, 1)
-            covid_end = datetime.datetime(2021, 6, 1)
-
-            # Load therapeutic area time series
-            ta_ni = load_ta_ni()
-            ta_practice = load_ta_practice()
-            starpu_prac = load_starpu_practice()
-
-            # Determine what to show: therapeutic area takes priority over BNF chapter
-            _use_ta = (area_name != "All prescribing" or sidebar_drug) and ta_ni is not None
-            _ta_name = area_name if area_name != "All prescribing" else None
-
-            # Check if the therapeutic area exists in the time series data
-            if _use_ta and _ta_name and ta_ni is not None:
-                _ta_available = _ta_name in ta_ni["therapeutic_area"].unique()
-                if not _ta_available:
-                    _use_ta = False  # fall back to BNF chapter view
 
             if _use_ta and _ta_name and ta_ni is not None:
                 # ══════════════════════════════════════════════════════════
-                # THERAPEUTIC AREA TIME SERIES
+                # THERAPEUTIC AREA — NI trend only
                 # ══════════════════════════════════════════════════════════
                 ta_data = ta_ni[ta_ni["therapeutic_area"] == _ta_name].sort_values("date")
 
-                # Per-capita using NI population
                 if starpu_prac is not None:
                     ni_pop = starpu_prac[starpu_prac["bnf_chapter"] == 1].groupby("year")["total_population"].sum().reset_index()
                     ni_pop.columns = ["year", "ni_population"]
@@ -1305,7 +1303,6 @@ drug groupings, deprivation mapping, and limitations.
                         _fill_pop = ni_pop["ni_population"].iloc[0] if len(ni_pop) > 0 else None
                         if _fill_pop:
                             ta_data["ni_population"] = ta_data["ni_population"].fillna(_fill_pop)
-
                     if metric == "ItemsPerCapita":
                         ta_data["rate"] = ta_data["total_items"] / ta_data["ni_population"] * 1000
                         ta_rate_label = "Items per 1,000 patients"
@@ -1316,7 +1313,6 @@ drug groupings, deprivation mapping, and limitations.
                     ta_data["rate"] = ta_data["total_items"] if metric == "ItemsPerCapita" else ta_data["total_cost"]
                     ta_rate_label = "Total items" if metric == "ItemsPerCapita" else "Total cost (£)"
 
-                # ── Chart 1: NI-wide therapeutic area trend ──
                 st.subheader(f"Northern Ireland – {_ta_name}")
                 fig1, ax1 = plt.subplots(figsize=(12, 4))
                 if smooth_window > 1:
@@ -1331,70 +1327,11 @@ drug groupings, deprivation mapping, and limitations.
                 ax1.grid(axis="y", alpha=0.3)
                 ax1.spines["top"].set_visible(False)
                 ax1.spines["right"].set_visible(False)
-                ax1.axvspan(covid_start, covid_end, alpha=0.08, color="red", label="COVID-19 period")
+                ax1.axvspan(_covid_start, _covid_end, alpha=0.08, color="red", label="COVID-19")
                 ax1.legend(fontsize=8, loc="upper left")
                 fig1.tight_layout()
                 st.pyplot(fig1)
                 plt.close(fig1)
-
-                # ── Chart 2: Practice-level overlay for therapeutic area ──
-                if ta_practice is not None and highlight_pracnos and starpu_prac is not None:
-                    ta_prac = ta_practice[ta_practice["therapeutic_area"] == _ta_name].copy()
-                    ta_chapter = TA_TO_CHAPTER.get(_ta_name)
-
-                    if ta_chapter and not ta_prac.empty:
-                        sp_ch = starpu_prac[starpu_prac["bnf_chapter"] == ta_chapter][["year", "practice", "total_population"]].copy()
-                        ta_prac = ta_prac.merge(sp_ch, on=["year", "practice"], how="left")
-
-                        st.subheader(f"{_ta_name} – practice comparison")
-                        fig2, ax2 = plt.subplots(figsize=(12, 5))
-                        colours2 = plt.cm.Set1(np.linspace(0, 1, max(len(highlight_pracnos), 8)))
-
-                        for idx_p, pno in enumerate(highlight_pracnos[:5]):
-                            pno_int = int(pno) if str(pno).isdigit() else pno
-                            ps = ta_prac[ta_prac["practice"] == pno_int].sort_values("date").copy()
-                            if ps.empty or ps["total_population"].isna().all():
-                                continue
-                            if metric == "ItemsPerCapita":
-                                ps["rate"] = ps["total_items"] / ps["total_population"] * 1000
-                            else:
-                                ps["rate"] = ps["total_cost"] / ps["total_population"] * 1000
-
-                            plabel = pracno_to_label.get(str(pno), str(pno))
-                            if len(plabel) > 40:
-                                plabel = plabel[:37] + "…"
-                            if smooth_window > 1:
-                                ps["rate_smooth"] = ps["rate"].rolling(window=smooth_window, min_periods=smooth_window).mean()
-                                ax2.plot(ps["date"], ps["rate"], color=colours2[idx_p], linewidth=0.3, alpha=0.15)
-                                ax2.plot(ps["date"], ps["rate_smooth"],
-                                        label=plabel, color=colours2[idx_p], linewidth=1.8)
-                            else:
-                                ax2.plot(ps["date"], ps["rate"],
-                                        label=plabel, color=colours2[idx_p], linewidth=1.2)
-
-                        # NI average line
-                        if smooth_window > 1 and "rate_smooth" in ta_data.columns:
-                            ax2.plot(ta_data["date"], ta_data["rate_smooth"],
-                                    color="#999999", linewidth=1.5, linestyle=":", label="NI average")
-                        else:
-                            ax2.plot(ta_data["date"], ta_data["rate"],
-                                    color="#999999", linewidth=1.5, linestyle=":", label="NI average")
-
-                        ax2.set_ylabel(ta_rate_label, fontsize=10)
-                        ax2.set_xlabel("")
-                        ax2.set_ylim(bottom=0)
-                        ax2.grid(axis="y", alpha=0.3)
-                        ax2.spines["top"].set_visible(False)
-                        ax2.spines["right"].set_visible(False)
-                        ax2.axvspan(covid_start, covid_end, alpha=0.08, color="red")
-                        ax2.legend(fontsize=7, loc="best")
-                        fig2.tight_layout()
-                        st.pyplot(fig2)
-                        plt.close(fig2)
-                elif highlight_pracnos:
-                    st.caption("Select a therapeutic area (not 'All prescribing') to see practice-level comparisons.")
-                else:
-                    st.caption("Use **Highlight practices** in the sidebar to compare practices.")
 
                 st.caption(
                     "Rates are per 1,000 registered patients (raw, not age-sex standardised). "
@@ -1403,7 +1340,7 @@ drug groupings, deprivation mapping, and limitations.
 
             else:
                 # ══════════════════════════════════════════════════════════
-                # BNF CHAPTER TIME SERIES (default view)
+                # BNF CHAPTER — NI trend + LCG comparison
                 # ══════════════════════════════════════════════════════════
                 if selected_chapter == 0:
                     lcg_data = ts_lcg.groupby(["lcg", "date", "year", "month"]).agg(
@@ -1411,17 +1348,8 @@ drug groupings, deprivation mapping, and limitations.
                         total_cost=("total_cost", "sum"),
                         starpu=("starpu", "sum"),
                     ).reset_index()
-                    if ts_practice is not None:
-                        prac_data = ts_practice.groupby(["practice", "date", "year", "month"]).agg(
-                            total_items=("total_items", "sum"),
-                            total_cost=("total_cost", "sum"),
-                            starpu=("starpu", "sum"),
-                            total_population=("total_population", "first"),
-                        ).reset_index()
                 else:
                     lcg_data = ts_lcg[ts_lcg["bnf_chapter"] == selected_chapter].copy()
-                    if ts_practice is not None:
-                        prac_data = ts_practice[ts_practice["bnf_chapter"] == selected_chapter].copy()
 
                 ts_metric_val = "items" if metric == "ItemsPerCapita" else "cost"
 
@@ -1432,7 +1360,6 @@ drug groupings, deprivation mapping, and limitations.
                     lcg_data["rate"] = lcg_data["total_cost"] / lcg_data["starpu"]
                     rate_label = "Cost (£) per STAR-PU"
 
-                # NI-wide aggregate
                 ni_data = lcg_data.groupby(["date", "year", "month"]).agg(
                     total_items=("total_items", "sum"),
                     total_cost=("total_cost", "sum"),
@@ -1446,7 +1373,7 @@ drug groupings, deprivation mapping, and limitations.
 
                 chapter_title = "All prescribing" if selected_chapter == 0 else BNF_CHAPTERS.get(selected_chapter, f"Chapter {selected_chapter}")
 
-                # ── Chart 1: NI-wide trend ──
+                # ── NI-wide trend ──
                 st.subheader(f"Northern Ireland – {chapter_title}")
                 fig1, ax1 = plt.subplots(figsize=(12, 4))
                 if smooth_window > 1:
@@ -1461,14 +1388,14 @@ drug groupings, deprivation mapping, and limitations.
                 ax1.grid(axis="y", alpha=0.3)
                 ax1.spines["top"].set_visible(False)
                 ax1.spines["right"].set_visible(False)
-                ax1.axvspan(covid_start, covid_end, alpha=0.08, color="red", label="COVID-19 period")
+                ax1.axvspan(_covid_start, _covid_end, alpha=0.08, color="red", label="COVID-19")
                 ax1.legend(fontsize=8, loc="upper left")
                 fig1.tight_layout()
                 st.pyplot(fig1)
                 plt.close(fig1)
 
-                # ── Chart 2: LCG comparison ──
-                st.subheader(f"By Local Commissioning Group")
+                # ── LCG comparison ──
+                st.subheader("By Local Commissioning Group")
                 lcg_colours = {
                     "Belfast": "#e11d48",
                     "Northern": "#2563eb",
@@ -1496,217 +1423,302 @@ drug groupings, deprivation mapping, and limitations.
                 ax2.grid(axis="y", alpha=0.3)
                 ax2.spines["top"].set_visible(False)
                 ax2.spines["right"].set_visible(False)
-                ax2.axvspan(covid_start, covid_end, alpha=0.08, color="red")
+                ax2.axvspan(_covid_start, _covid_end, alpha=0.08, color="red")
                 ax2.legend(fontsize=9, loc="best")
                 fig2.tight_layout()
                 st.pyplot(fig2)
                 plt.close(fig2)
 
-                # ── Chart 3: Practice-level overlay ──
-                if ts_practice is not None:
-                    st.subheader("Highlighted practices overlay")
-                    if highlight_pracnos:
-                        st.caption("Showing practices selected in the sidebar.")
-                    else:
-                        st.caption("Use **Highlight practices** in the sidebar to pick practices to compare.")
-
-                    if highlight_pracnos:
-                        selected_prac_nos = [int(p) if str(p).isdigit() else p for p in highlight_pracnos]
-
-                        fig3, ax3 = plt.subplots(figsize=(12, 5))
-                        colours3 = plt.cm.Set1(np.linspace(0, 1, max(len(selected_prac_nos), 8)))
-
-                        for idx, pno in enumerate(selected_prac_nos):
-                            prac_subset = prac_data[prac_data["practice"] == pno].sort_values("date")
-                            if prac_subset.empty:
-                                continue
-                            prac_subset = prac_subset.copy()
-                            if ts_metric_val == "items":
-                                prac_subset["rate"] = prac_subset["total_items"] / prac_subset["starpu"]
-                            else:
-                                prac_subset["rate"] = prac_subset["total_cost"] / prac_subset["starpu"]
-
-                            label = pracno_to_label.get(str(pno), str(pno))
-                            if len(label) > 40:
-                                label = label[:37] + "…"
-                            if smooth_window > 1:
-                                prac_subset["rate_smooth"] = prac_subset["rate"].rolling(window=smooth_window, min_periods=smooth_window).mean()
-                                ax3.plot(prac_subset["date"], prac_subset["rate"], color=colours3[idx], linewidth=0.3, alpha=0.15)
-                                ax3.plot(prac_subset["date"], prac_subset["rate_smooth"],
-                                         label=label, color=colours3[idx], linewidth=1.8)
-                            else:
-                                ax3.plot(prac_subset["date"], prac_subset["rate"],
-                                         label=label, color=colours3[idx], linewidth=1.2)
-
-                        # NI average
-                        if smooth_window > 1:
-                            ax3.plot(ni_data["date"], ni_data["rate_smooth"],
-                                    color="#999999", linewidth=1.5, linestyle=":", label="NI average")
-                        else:
-                            ax3.plot(ni_data["date"], ni_data["rate"],
-                                    color="#999999", linewidth=1.5, linestyle=":", label="NI average")
-
-                        ax3.set_ylabel(rate_label, fontsize=10)
-                        ax3.set_xlabel("")
-                        ax3.set_ylim(bottom=0)
-                        ax3.grid(axis="y", alpha=0.3)
-                        ax3.spines["top"].set_visible(False)
-                        ax3.spines["right"].set_visible(False)
-                        ax3.axvspan(covid_start, covid_end, alpha=0.08, color="red")
-                        ax3.legend(fontsize=7, loc="best")
-                        fig3.tight_layout()
-                        st.pyplot(fig3)
-                        plt.close(fig3)
-
-            # ── Practice profile: multi-chapter panel ──────────────────────
-            st.markdown("---")
-            st.subheader("Practice profile – standardised time series")
-            st.caption(
-                "Compare highlighted practices against their GP Federation peers "
-                "(10th–90th percentile band) and the NI average across key BNF chapters. "
-                "Select practices using **Highlight practices** in the sidebar."
-            )
-
-            if ts_practice is not None and highlight_pracnos:
-                import datetime as _dt
-
-                # Build info for each highlighted practice
-                _profile_colours = ["#e11d48", "#2563eb", "#16a34a", "#d97706", "#7c3aed"]
-                _profile_infos = []
-                for _pi, _pno in enumerate(highlight_pracnos[:5]):
-                    _pno_int = int(_pno) if str(_pno).isdigit() else _pno
-                    _pno_str = str(_pno).strip()
-                    if practices["PracNo"].dtype == "object":
-                        _pr = practices[practices["PracNo"].str.strip() == _pno_str]
-                    else:
-                        _pr = practices[practices["PracNo"] == _pno_int]
-                    if _pr.empty:
-                        continue
-                    _fed = _pr["Federation"].values[0].strip() if "Federation" in _pr.columns else None
-                    _disp = _pr["Address1"].values[0].strip() if "Address1" in _pr.columns else _pno_str
-                    # Get federation peer practice numbers
-                    if _fed:
-                        _fp = practices[practices["Federation"].str.strip() == _fed]["PracNo"].tolist()
-                        _fp_int = [int(p) if str(p).isdigit() else p for p in _fp]
-                    else:
-                        _fp_int = []
-                    _profile_infos.append({
-                        "pracno_int": _pno_int,
-                        "display": _disp,
-                        "federation": _fed,
-                        "fed_pracnos": _fp_int,
-                        "colour": _profile_colours[_pi % len(_profile_colours)],
-                    })
-
-                if _profile_infos:
-                    profile_chapters = [4, 2, 1, 6, 3, 13]
-                    chapter_names_map = {4: "CNS", 2: "Cardiovascular", 1: "GI", 6: "Endocrine", 3: "Respiratory", 13: "Skin"}
-
-                    profile_ts_metric = "items" if metric == "ItemsPerCapita" else "cost"
-                    profile_smooth_w = smooth_window
-                    rate_col = "items_per_starpu" if profile_ts_metric == "items" else "cost_per_starpu"
-                    rate_label_profile = "Items per STAR-PU" if profile_ts_metric == "items" else "Cost (£) per STAR-PU"
-
-                    def _smooth(series, w):
-                        if w > 1:
-                            return series.rolling(window=w, min_periods=w).mean()
-                        return series
-
-                    fig_profile, axes = plt.subplots(3, 2, figsize=(14, 12), sharex=True)
-                    axes_flat = axes.flatten()
-
-                    for idx, ch in enumerate(profile_chapters):
-                        ax = axes_flat[idx]
-                        ch_label = chapter_names_map.get(ch, BNF_CHAPTERS.get(ch, f"Ch {ch}"))
-
-                        ch_data = ts_practice[ts_practice["bnf_chapter"] == ch].copy()
-                        if ch_data.empty:
-                            ax.set_title(ch_label, fontsize=11, fontweight="bold")
-                            ax.text(0.5, 0.5, "No data", ha="center", va="center", transform=ax.transAxes)
-                            continue
-
-                        if rate_col not in ch_data.columns:
-                            if profile_ts_metric == "items":
-                                ch_data["items_per_starpu"] = ch_data["total_items"] / ch_data["starpu"]
-                            else:
-                                ch_data["cost_per_starpu"] = ch_data["total_cost"] / ch_data["starpu"]
-
-                        # NI average
-                        ni_ch = ch_data.groupby("date").agg(
-                            total=("total_items" if profile_ts_metric == "items" else "total_cost", "sum"),
-                            starpu_sum=("starpu", "sum"),
-                        ).reset_index()
-                        ni_ch["rate"] = ni_ch["total"] / ni_ch["starpu_sum"]
-                        ni_ch = ni_ch.sort_values("date")
-                        ax.plot(ni_ch["date"], _smooth(ni_ch["rate"], profile_smooth_w),
-                                color="#999999", linewidth=1.5, linestyle=":", label="NI average")
-
-                        # Plot each highlighted practice with its federation band
-                        _fed_bands_drawn = set()
-                        for pinfo in _profile_infos:
-                            # Federation band (only draw once per unique federation)
-                            if pinfo["federation"] and pinfo["federation"] not in _fed_bands_drawn and pinfo["fed_pracnos"]:
-                                fed_ch = ch_data[ch_data["practice"].isin(pinfo["fed_pracnos"])]
-                                if not fed_ch.empty:
-                                    fed_agg = fed_ch.groupby("date")[rate_col].agg(
-                                        p10=lambda x: x.quantile(0.1),
-                                        p90=lambda x: x.quantile(0.9),
-                                    ).reset_index().sort_values("date")
-                                    p10_s = _smooth(fed_agg["p10"], profile_smooth_w)
-                                    p90_s = _smooth(fed_agg["p90"], profile_smooth_w)
-                                    ax.fill_between(fed_agg["date"], p10_s, p90_s,
-                                                   alpha=0.1, color=pinfo["colour"],
-                                                   label=f"{pinfo['federation']} (10th–90th)")
-                            _fed_bands_drawn.add(pinfo["federation"])
-
-                            # Practice line (inside the for loop so all practices get drawn)
-                            prac_ch = ch_data[ch_data["practice"] == pinfo["pracno_int"]].sort_values("date")
-                            if not prac_ch.empty:
-                                ax.plot(prac_ch["date"],
-                                        _smooth(prac_ch[rate_col], profile_smooth_w),
-                                        color=pinfo["colour"], linewidth=2,
-                                        label=pinfo["display"][:30])
-
-                        ax.set_title(ch_label, fontsize=11, fontweight="bold")
-                        ax.set_ylim(bottom=0)
-                        ax.grid(axis="y", alpha=0.3)
-                        ax.spines["top"].set_visible(False)
-                        ax.spines["right"].set_visible(False)
-                        ax.axvspan(_dt.datetime(2020, 3, 1), _dt.datetime(2021, 6, 1),
-                                  alpha=0.06, color="red")
-                        if idx == 0:
-                            ax.legend(fontsize=7, loc="best")
-                        if idx >= 4:
-                            ax.tick_params(axis="x", rotation=30, labelsize=8)
-                        ax.set_ylabel(rate_label_profile, fontsize=8)
-
-                    # Title
-                    _title_names = [p["display"][:20] for p in _profile_infos]
-                    fig_profile.suptitle(
-                        " vs ".join(_title_names) + " vs NI",
-                        fontsize=12, fontweight="bold", y=1.01
-                    )
-                    fig_profile.tight_layout()
-                    st.pyplot(fig_profile)
-                    plt.close(fig_profile)
-
-                    # Caption
-                    _fed_list = list(dict.fromkeys(p["federation"] for p in _profile_infos if p["federation"]))
-                    st.caption(
-                        f"Federations: {', '.join(_fed_list)} · "
-                        f"Shaded bands = 10th–90th percentile of federation peers · "
-                        f"Grey dotted = NI average"
-                    )
-
-            st.markdown("---")
-            st.caption(
-                "\\* Chapters marked with * have STAR-PU age-sex weightings available. "
-                "STAR-PU standardised rates adjust for the expected prescribing given a population's "
-                "age and sex profile, allowing fairer comparison between areas with different demographics."
-            )
+                st.caption(
+                    "★ Chapters marked with ★ have STAR-PU age-sex weightings available. "
+                    "STAR-PU standardised rates adjust for the expected prescribing given a population's "
+                    "age and sex profile, allowing fairer comparison between areas with different demographics."
+                )
     else:
         with tab_trends:
             st.info("Time-series data not available. Trends will appear once data is loaded.")
+
+    # ════════════════════════════════════════════════════════════════════
+    # TAB 4: PRACTICE PROFILE (practice vs NI, federation bands, 6-chapter panel)
+    # ════════════════════════════════════════════════════════════════════
+    with tab_profile:
+        st.header("Practice Profile")
+
+        if not highlight_pracnos:
+            st.info("Select practices using **Highlight practices** in the sidebar to see their profile here.")
+        elif ts_practice is None:
+            st.info("Time-series data not available.")
+        else:
+            # Build info for each highlighted practice
+            _profile_colours = ["#e11d48", "#2563eb", "#16a34a", "#d97706", "#7c3aed"]
+            _profile_infos = []
+            for _pi, _pno in enumerate(highlight_pracnos[:5]):
+                _pno_int = int(_pno) if str(_pno).isdigit() else _pno
+                _pno_str = str(_pno).strip()
+                _pr = practices[practices["PracNo"] == _pno_str]
+                if _pr.empty:
+                    _pr = practices[practices["PracNo"] == str(_pno_int)]
+                if _pr.empty:
+                    continue
+                _fed = _pr["Federation"].values[0].strip() if "Federation" in _pr.columns else None
+                _disp = _pr["Address1"].values[0].strip() if "Address1" in _pr.columns else _pno_str
+                if _fed:
+                    _fp = practices[practices["Federation"].str.strip() == _fed]["PracNo"].tolist()
+                    _fp_int = [int(p) if str(p).isdigit() else p for p in _fp]
+                else:
+                    _fp_int = []
+                _profile_infos.append({
+                    "pracno_int": _pno_int,
+                    "display": _disp,
+                    "federation": _fed,
+                    "fed_pracnos": _fp_int,
+                    "colour": _profile_colours[_pi % len(_profile_colours)],
+                })
+
+            if not _profile_infos:
+                st.warning("Could not find data for the selected practice(s).")
+            else:
+                # ── Section 1: Selected area — practice vs NI ──
+                if _use_ta and _ta_name and ta_practice is not None and starpu_prac is not None:
+                    ta_prac = ta_practice[ta_practice["therapeutic_area"] == _ta_name].copy()
+                    ta_chapter = TA_TO_CHAPTER.get(_ta_name)
+                    ta_data_ni = ta_ni[ta_ni["therapeutic_area"] == _ta_name].sort_values("date") if ta_ni is not None else None
+
+                    if ta_chapter and not ta_prac.empty:
+                        sp_ch = starpu_prac[starpu_prac["bnf_chapter"] == ta_chapter][["year", "practice", "total_population"]].copy()
+                        ta_prac = ta_prac.merge(sp_ch, on=["year", "practice"], how="left")
+
+                        # Compute NI rate for overlay
+                        if ta_data_ni is not None and starpu_prac is not None:
+                            ni_pop = starpu_prac[starpu_prac["bnf_chapter"] == 1].groupby("year")["total_population"].sum().reset_index()
+                            ni_pop.columns = ["year", "ni_population"]
+                            ta_data_ni = ta_data_ni.merge(ni_pop, on="year", how="left")
+                            if ta_data_ni["ni_population"].isna().any():
+                                _fill_pop = ni_pop["ni_population"].iloc[0] if len(ni_pop) > 0 else None
+                                if _fill_pop:
+                                    ta_data_ni["ni_population"] = ta_data_ni["ni_population"].fillna(_fill_pop)
+                            if metric == "ItemsPerCapita":
+                                ta_data_ni["rate"] = ta_data_ni["total_items"] / ta_data_ni["ni_population"] * 1000
+                                _prac_rate_label = "Items per 1,000 patients"
+                            else:
+                                ta_data_ni["rate"] = ta_data_ni["total_cost"] / ta_data_ni["ni_population"] * 1000
+                                _prac_rate_label = "Cost (£) per 1,000 patients"
+
+                        st.subheader(f"{_ta_name} – practice vs NI")
+                        fig_ta, ax_ta = plt.subplots(figsize=(12, 5))
+                        colours_ta = plt.cm.Set1(np.linspace(0, 1, max(len(highlight_pracnos), 8)))
+
+                        for idx_p, pno in enumerate(highlight_pracnos[:5]):
+                            pno_int = int(pno) if str(pno).isdigit() else pno
+                            ps = ta_prac[ta_prac["practice"] == pno_int].sort_values("date").copy()
+                            if ps.empty or ps["total_population"].isna().all():
+                                continue
+                            if metric == "ItemsPerCapita":
+                                ps["rate"] = ps["total_items"] / ps["total_population"] * 1000
+                            else:
+                                ps["rate"] = ps["total_cost"] / ps["total_population"] * 1000
+                            plabel = pracno_to_label.get(str(pno), str(pno))
+                            if len(plabel) > 40:
+                                plabel = plabel[:37] + "…"
+                            if smooth_window > 1:
+                                ps["rate_smooth"] = ps["rate"].rolling(window=smooth_window, min_periods=smooth_window).mean()
+                                ax_ta.plot(ps["date"], ps["rate"], color=colours_ta[idx_p], linewidth=0.3, alpha=0.15)
+                                ax_ta.plot(ps["date"], ps["rate_smooth"], label=plabel, color=colours_ta[idx_p], linewidth=1.8)
+                            else:
+                                ax_ta.plot(ps["date"], ps["rate"], label=plabel, color=colours_ta[idx_p], linewidth=1.2)
+
+                        # NI average
+                        if ta_data_ni is not None and "rate" in ta_data_ni.columns:
+                            if smooth_window > 1:
+                                ta_data_ni["rate_smooth"] = ta_data_ni["rate"].rolling(window=smooth_window, min_periods=smooth_window).mean()
+                                ax_ta.plot(ta_data_ni["date"], ta_data_ni["rate_smooth"],
+                                          color="#999999", linewidth=1.5, linestyle=":", label="NI average")
+                            else:
+                                ax_ta.plot(ta_data_ni["date"], ta_data_ni["rate"],
+                                          color="#999999", linewidth=1.5, linestyle=":", label="NI average")
+
+                        ax_ta.set_ylabel(_prac_rate_label, fontsize=10)
+                        ax_ta.set_xlabel("")
+                        ax_ta.set_ylim(bottom=0)
+                        ax_ta.grid(axis="y", alpha=0.3)
+                        ax_ta.spines["top"].set_visible(False)
+                        ax_ta.spines["right"].set_visible(False)
+                        ax_ta.axvspan(_covid_start, _covid_end, alpha=0.08, color="red")
+                        ax_ta.legend(fontsize=7, loc="best")
+                        fig_ta.tight_layout()
+                        st.pyplot(fig_ta)
+                        plt.close(fig_ta)
+
+                elif not _use_ta and ts_practice is not None:
+                    # BNF chapter practice overlay
+                    if selected_chapter == 0:
+                        prac_data = ts_practice.groupby(["practice", "date", "year", "month"]).agg(
+                            total_items=("total_items", "sum"),
+                            total_cost=("total_cost", "sum"),
+                            starpu=("starpu", "sum"),
+                            total_population=("total_population", "first"),
+                        ).reset_index()
+                    else:
+                        prac_data = ts_practice[ts_practice["bnf_chapter"] == selected_chapter].copy()
+
+                    ts_metric_val = "items" if metric == "ItemsPerCapita" else "cost"
+                    chapter_title = "All prescribing" if selected_chapter == 0 else BNF_CHAPTERS.get(selected_chapter, f"Chapter {selected_chapter}")
+
+                    st.subheader(f"{chapter_title} – practice vs NI")
+                    fig_ch, ax_ch = plt.subplots(figsize=(12, 5))
+                    colours_ch = plt.cm.Set1(np.linspace(0, 1, max(len(highlight_pracnos), 8)))
+
+                    # NI average
+                    ni_agg = prac_data.groupby("date").agg(
+                        total_items=("total_items", "sum"),
+                        total_cost=("total_cost", "sum"),
+                        starpu=("starpu", "sum"),
+                    ).reset_index().sort_values("date")
+                    if ts_metric_val == "items":
+                        ni_agg["rate"] = ni_agg["total_items"] / ni_agg["starpu"]
+                        _ch_rate_label = "Items per STAR-PU"
+                    else:
+                        ni_agg["rate"] = ni_agg["total_cost"] / ni_agg["starpu"]
+                        _ch_rate_label = "Cost (£) per STAR-PU"
+
+                    for idx_p, pno in enumerate(highlight_pracnos[:5]):
+                        pno_int = int(pno) if str(pno).isdigit() else pno
+                        prac_subset = prac_data[prac_data["practice"] == pno_int].sort_values("date").copy()
+                        if prac_subset.empty:
+                            continue
+                        if ts_metric_val == "items":
+                            prac_subset["rate"] = prac_subset["total_items"] / prac_subset["starpu"]
+                        else:
+                            prac_subset["rate"] = prac_subset["total_cost"] / prac_subset["starpu"]
+                        plabel = pracno_to_label.get(str(pno), str(pno))
+                        if len(plabel) > 40:
+                            plabel = plabel[:37] + "…"
+                        if smooth_window > 1:
+                            prac_subset["rate_smooth"] = prac_subset["rate"].rolling(window=smooth_window, min_periods=smooth_window).mean()
+                            ax_ch.plot(prac_subset["date"], prac_subset["rate"], color=colours_ch[idx_p], linewidth=0.3, alpha=0.15)
+                            ax_ch.plot(prac_subset["date"], prac_subset["rate_smooth"], label=plabel, color=colours_ch[idx_p], linewidth=1.8)
+                        else:
+                            ax_ch.plot(prac_subset["date"], prac_subset["rate"], label=plabel, color=colours_ch[idx_p], linewidth=1.2)
+
+                    if smooth_window > 1:
+                        ni_agg["rate_smooth"] = ni_agg["rate"].rolling(window=smooth_window, min_periods=smooth_window).mean()
+                        ax_ch.plot(ni_agg["date"], ni_agg["rate_smooth"], color="#999999", linewidth=1.5, linestyle=":", label="NI average")
+                    else:
+                        ax_ch.plot(ni_agg["date"], ni_agg["rate"], color="#999999", linewidth=1.5, linestyle=":", label="NI average")
+
+                    ax_ch.set_ylabel(_ch_rate_label, fontsize=10)
+                    ax_ch.set_xlabel("")
+                    ax_ch.set_ylim(bottom=0)
+                    ax_ch.grid(axis="y", alpha=0.3)
+                    ax_ch.spines["top"].set_visible(False)
+                    ax_ch.spines["right"].set_visible(False)
+                    ax_ch.axvspan(_covid_start, _covid_end, alpha=0.08, color="red")
+                    ax_ch.legend(fontsize=7, loc="best")
+                    fig_ch.tight_layout()
+                    st.pyplot(fig_ch)
+                    plt.close(fig_ch)
+
+                # ── Section 2: 6-chapter STAR-PU panel ──
+                st.markdown("---")
+                st.subheader("Standardised time series across key chapters")
+                st.caption(
+                    "Practice vs GP Federation peers (10th–90th percentile band) "
+                    "and NI average across six major BNF chapters."
+                )
+
+                profile_chapters = [4, 2, 1, 6, 3, 13]
+                chapter_names_map = {4: "CNS", 2: "Cardiovascular", 1: "GI", 6: "Endocrine", 3: "Respiratory", 13: "Skin"}
+
+                profile_ts_metric = "items" if metric == "ItemsPerCapita" else "cost"
+                profile_smooth_w = smooth_window
+                rate_col = "items_per_starpu" if profile_ts_metric == "items" else "cost_per_starpu"
+                rate_label_profile = "Items per STAR-PU" if profile_ts_metric == "items" else "Cost (£) per STAR-PU"
+
+                def _smooth(series, w):
+                    if w > 1:
+                        return series.rolling(window=w, min_periods=w).mean()
+                    return series
+
+                fig_profile, axes = plt.subplots(3, 2, figsize=(14, 12), sharex=True)
+                axes_flat = axes.flatten()
+
+                for idx, ch in enumerate(profile_chapters):
+                    ax = axes_flat[idx]
+                    ch_label = chapter_names_map.get(ch, BNF_CHAPTERS.get(ch, f"Ch {ch}"))
+
+                    ch_data = ts_practice[ts_practice["bnf_chapter"] == ch].copy()
+                    if ch_data.empty:
+                        ax.set_title(ch_label, fontsize=11, fontweight="bold")
+                        ax.text(0.5, 0.5, "No data", ha="center", va="center", transform=ax.transAxes)
+                        continue
+
+                    if rate_col not in ch_data.columns:
+                        if profile_ts_metric == "items":
+                            ch_data["items_per_starpu"] = ch_data["total_items"] / ch_data["starpu"]
+                        else:
+                            ch_data["cost_per_starpu"] = ch_data["total_cost"] / ch_data["starpu"]
+
+                    # NI average
+                    ni_ch = ch_data.groupby("date").agg(
+                        total=("total_items" if profile_ts_metric == "items" else "total_cost", "sum"),
+                        starpu_sum=("starpu", "sum"),
+                    ).reset_index()
+                    ni_ch["rate"] = ni_ch["total"] / ni_ch["starpu_sum"]
+                    ni_ch = ni_ch.sort_values("date")
+                    ax.plot(ni_ch["date"], _smooth(ni_ch["rate"], profile_smooth_w),
+                            color="#999999", linewidth=1.5, linestyle=":", label="NI average")
+
+                    # Plot each highlighted practice with its federation band
+                    _fed_bands_drawn = set()
+                    for pinfo in _profile_infos:
+                        if pinfo["federation"] and pinfo["federation"] not in _fed_bands_drawn and pinfo["fed_pracnos"]:
+                            fed_ch = ch_data[ch_data["practice"].isin(pinfo["fed_pracnos"])]
+                            if not fed_ch.empty:
+                                fed_agg = fed_ch.groupby("date")[rate_col].agg(
+                                    p10=lambda x: x.quantile(0.1),
+                                    p90=lambda x: x.quantile(0.9),
+                                ).reset_index().sort_values("date")
+                                p10_s = _smooth(fed_agg["p10"], profile_smooth_w)
+                                p90_s = _smooth(fed_agg["p90"], profile_smooth_w)
+                                ax.fill_between(fed_agg["date"], p10_s, p90_s,
+                                               alpha=0.1, color=pinfo["colour"],
+                                               label=f"{pinfo['federation']} (10th–90th)")
+                        _fed_bands_drawn.add(pinfo["federation"])
+
+                        prac_ch = ch_data[ch_data["practice"] == pinfo["pracno_int"]].sort_values("date")
+                        if not prac_ch.empty:
+                            ax.plot(prac_ch["date"],
+                                    _smooth(prac_ch[rate_col], profile_smooth_w),
+                                    color=pinfo["colour"], linewidth=2,
+                                    label=pinfo["display"][:30])
+
+                    ax.set_title(ch_label, fontsize=11, fontweight="bold")
+                    ax.set_ylim(bottom=0)
+                    ax.grid(axis="y", alpha=0.3)
+                    ax.spines["top"].set_visible(False)
+                    ax.spines["right"].set_visible(False)
+                    ax.axvspan(_covid_start, _covid_end, alpha=0.06, color="red")
+                    if idx == 0:
+                        ax.legend(fontsize=7, loc="best")
+                    if idx >= 4:
+                        ax.tick_params(axis="x", rotation=30, labelsize=8)
+                    ax.set_ylabel(rate_label_profile, fontsize=8)
+
+                _title_names = [p["display"][:20] for p in _profile_infos]
+                fig_profile.suptitle(
+                    " vs ".join(_title_names) + " vs NI",
+                    fontsize=12, fontweight="bold", y=1.01
+                )
+                fig_profile.tight_layout()
+                st.pyplot(fig_profile)
+                plt.close(fig_profile)
+
+                _fed_list = list(dict.fromkeys(p["federation"] for p in _profile_infos if p["federation"]))
+                st.caption(
+                    f"Federations: {', '.join(_fed_list)} · "
+                    f"Shaded bands = 10th–90th percentile of federation peers · "
+                    f"Grey dotted = NI average"
+                )
 
     # ════════════════════════════════════════════════════════════════════
     # TAB 4: QOF (Optional)
