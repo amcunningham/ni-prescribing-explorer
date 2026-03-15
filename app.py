@@ -404,11 +404,13 @@ def load_data():
     3. Local CSV files (data/ directory)
     4. Download from OpenDataNI
     """
-    # 1. Try pickle cache
+    # 1. Try pickle cache (bust if missing TotalQuantity column)
     if os.path.exists(CACHE_FILE) and os.path.exists(CACHE_PRACTICES):
         merged = pd.read_pickle(CACHE_FILE)
         practices = pd.read_pickle(CACHE_PRACTICES)
-        return merged, practices
+        if "TotalQuantity" in merged.columns:
+            return merged, practices
+        # Stale cache — fall through to rebuild
 
     # 2. Try bundled parquet files
     if os.path.exists(PARQUET_PRESCRIBING) and os.path.exists(PARQUET_PRACTICES):
