@@ -1428,23 +1428,33 @@ drug groupings, deprivation mapping, and limitations.
             if _all_rows:
                 _combined = pd.DataFrame(_all_rows)
 
-                # Grouped bar chart
+                # Grouped bar chart – exclude "All prescribing" when showing
+                # quantity, because the total (~10k tablets) dwarfs individual
+                # therapeutic areas (~1-15 tablets) and makes the chart unreadable.
+                _chart_df = _combined.copy()
+                _chart_names = list(_ta_names_list)
+                if metric == "QuantityPerCapita":
+                    _chart_df = _chart_df[_chart_df["Therapeutic area"] != "All prescribing"].reset_index(drop=True)
+                    _chart_names = [n for n in _chart_names if n != "All prescribing"]
+
                 fig_ta, ax_ta = plt.subplots(figsize=(12, 5))
-                x = np.arange(len(_ta_names_list))
+                x = np.arange(len(_chart_names))
                 n_bars = len(_prac_infos) + 1  # practices + NI mean
                 w = 0.8 / n_bars
 
                 for bi, pinfo in enumerate(_prac_infos):
-                    vals = _combined[pinfo["label"]].fillna(0)
+                    vals = _chart_df[pinfo["label"]].fillna(0)
                     ax_ta.bar(x + bi * w, vals, w, label=pinfo["label"][:25],
                               color=pinfo["colour"], alpha=0.85)
                 # NI mean as last group
-                ax_ta.bar(x + len(_prac_infos) * w, _combined["NI mean"], w,
+                ax_ta.bar(x + len(_prac_infos) * w, _chart_df["NI mean"], w,
                           label="NI mean", color="#bdbdbd")
 
                 ax_ta.set_xticks(x + (n_bars - 1) * w / 2)
-                ax_ta.set_xticklabels(_ta_names_list, rotation=35, ha="right", fontsize=8)
+                ax_ta.set_xticklabels(_chart_names, rotation=35, ha="right", fontsize=8)
                 ax_ta.set_ylabel(label_metric)
+                if metric == "QuantityPerCapita":
+                    ax_ta.set_title("Excluding 'All prescribing' — see table below for full data", fontsize=9, style="italic", color="#666")
                 ax_ta.legend(fontsize=8, loc="best")
                 ax_ta.set_ylim(bottom=0)
                 fig_ta.tight_layout()
