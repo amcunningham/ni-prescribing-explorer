@@ -485,11 +485,11 @@ def per_cap(merged, area_filter):
 
 
 @st.cache_data(show_spinner=False)
-def per_cap_by_name(_merged, area_name):
+def per_cap_by_name(merged, area_name):
     """Cached per-capita computation keyed by therapeutic area name.
     Avoids recomputing on every tab render."""
     ta = THERAPEUTIC_AREAS[area_name]
-    return per_cap(_merged, ta["filter"])
+    return per_cap(merged, ta["filter"])
 
 
 @st.cache_data(show_spinner=False)
