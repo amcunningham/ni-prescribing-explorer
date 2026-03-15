@@ -461,16 +461,24 @@ def per_cap(merged, area_filter):
         group_cols.append("DepQuintile")
     if "Ward_Dep_Rank" in df.columns:
         group_cols.append("Ward_Dep_Rank")
+    agg_dict = {"TotalItems": ("TotalItems", "sum"), "TotalCost": ("ActualCost", "sum")}
+    if "TotalQuantity" in df.columns:
+        agg_dict["TotalQuantity"] = ("TotalQuantity", "sum")
     agg = (
         df.groupby(group_cols)
-        .agg(TotalItems=("TotalItems", "sum"), TotalCost=("ActualCost", "sum"))
+        .agg(**agg_dict)
         .reset_index()
     )
     # Monthly average per capita
     agg["TotalItems"] = agg["TotalItems"] / n_months
     agg["TotalCost"] = agg["TotalCost"] / n_months
+    if "TotalQuantity" in agg.columns:
+        agg["TotalQuantity"] = agg["TotalQuantity"] / n_months
+    else:
+        agg["TotalQuantity"] = 0.0
     agg["ItemsPerCapita"] = agg["TotalItems"] / agg["RegisteredPatients"]
     agg["CostPerCapita"] = agg["TotalCost"] / agg["RegisteredPatients"]
+    agg["QuantityPerCapita"] = agg["TotalQuantity"] / agg["RegisteredPatients"]
     return agg.sort_values("ItemsPerCapita", ascending=False)
 
 
@@ -624,7 +632,7 @@ def caterpillar_chart(pc, highlight_practices=None, title="", metric="ItemsPerCa
                     fontweight="bold",
                 )
 
-    label = "Items per registered patient" if metric == "ItemsPerCapita" else "Cost (£) per registered patient"
+    label = {"ItemsPerCapita": "Items per registered patient", "CostPerCapita": "Cost (£) per registered patient", "QuantityPerCapita": "Tablets per registered patient"}.get(metric, metric)
     ax.set_xlabel("Practice rank")
     ax.set_ylabel(label)
     ax.set_title(title)
@@ -635,20 +643,21 @@ def caterpillar_chart(pc, highlight_practices=None, title="", metric="ItemsPerCa
 
 def trust_bar_chart(pc, title="", metric="ItemsPerCapita"):
     """Bar chart of per-capita rate by HSC Trust."""
-    trust = pc.groupby("Trust").agg(
-        TotalItems=("TotalItems", "sum"),
-        TotalCost=("TotalCost", "sum"),
-    ).reset_index()
+    agg_dict = {"TotalItems": ("TotalItems", "sum"), "TotalCost": ("TotalCost", "sum")}
+    if "TotalQuantity" in pc.columns:
+        agg_dict["TotalQuantity"] = ("TotalQuantity", "sum")
+    trust = pc.groupby("Trust").agg(**agg_dict).reset_index()
     trust_pop = pc.drop_duplicates("Practice").groupby("Trust")["RegisteredPatients"].sum()
     trust["Pop"] = trust["Trust"].map(trust_pop)
     trust["ItemsPerCapita"] = trust["TotalItems"] / trust["Pop"]
     trust["CostPerCapita"] = trust["TotalCost"] / trust["Pop"]
+    trust["QuantityPerCapita"] = trust.get("TotalQuantity", 0) / trust["Pop"]
     trust = trust.sort_values(metric, ascending=True)
 
     fig, ax = plt.subplots(figsize=(8, 4))
     colours = ["#2196F3", "#4CAF50", "#FF9800", "#9C27B0", "#F44336"]
     ax.barh(trust["Trust"], trust[metric], color=colours[:len(trust)])
-    label = "Items per registered patient" if metric == "ItemsPerCapita" else "Cost (£) per registered patient"
+    label = {"ItemsPerCapita": "Items per registered patient", "CostPerCapita": "Cost (£) per registered patient", "QuantityPerCapita": "Tablets per registered patient"}.get(metric, metric)
     ax.set_xlabel(label)
     ax.set_title(title)
     fig.tight_layout()
@@ -657,15 +666,15 @@ def trust_bar_chart(pc, title="", metric="ItemsPerCapita"):
 
 def lcg_summary(pc):
     """Summary stats by LCG."""
-    lcg = pc.groupby("LCG").agg(
-        Practices=("Practice", "nunique"),
-        TotalItems=("TotalItems", "sum"),
-        TotalCost=("TotalCost", "sum"),
-    ).reset_index()
+    agg_dict = {"Practices": ("Practice", "nunique"), "TotalItems": ("TotalItems", "sum"), "TotalCost": ("TotalCost", "sum")}
+    if "TotalQuantity" in pc.columns:
+        agg_dict["TotalQuantity"] = ("TotalQuantity", "sum")
+    lcg = pc.groupby("LCG").agg(**agg_dict).reset_index()
     lcg_pop = pc.drop_duplicates("Practice").groupby("LCG")["RegisteredPatients"].sum()
     lcg["RegisteredPatients"] = lcg["LCG"].map(lcg_pop)
     lcg["ItemsPerCapita"] = lcg["TotalItems"] / lcg["RegisteredPatients"]
     lcg["CostPerCapita"] = lcg["TotalCost"] / lcg["RegisteredPatients"]
+    lcg["QuantityPerCapita"] = lcg.get("TotalQuantity", 0) / lcg["RegisteredPatients"]
     return lcg.sort_values("ItemsPerCapita", ascending=False)
 
 
@@ -859,10 +868,10 @@ def main():
     # 3. METRIC
     metric = st.sidebar.radio(
         "Metric",
-        ["ItemsPerCapita", "CostPerCapita"],
-        format_func=lambda x: "Items" if x == "ItemsPerCapita" else "Cost (£)",
+        ["ItemsPerCapita", "CostPerCapita", "QuantityPerCapita"],
+        format_func=lambda x: {"ItemsPerCapita": "Items", "CostPerCapita": "Cost (£)", "QuantityPerCapita": "Quantity (tablets)"}[x],
     )
-    label_metric = "Items per patient" if metric == "ItemsPerCapita" else "Cost (£) per patient"
+    label_metric = {"ItemsPerCapita": "Items per patient", "CostPerCapita": "Cost (£) per patient", "QuantityPerCapita": "Tablets per patient"}[metric]
 
     # 4. RATE TYPE (Raw vs Standardised) — only for BNF chapters with STAR-PU
     _has_starpu = selected_chapter in STARPU_CHAPTERS
@@ -1010,7 +1019,10 @@ def main():
         display_name = sidebar_drug
     else:
         pc = per_cap(merged, area["filter"])
-        display_name = area_name
+        if _sidebar_selection.startswith("ch:") and selected_chapter != 0:
+            display_name = BNF_CHAPTERS.get(selected_chapter, f"Chapter {selected_chapter}")
+        else:
+            display_name = area_name
     ni_mean = pc[metric].mean()
 
     # ════════════════════════════════════════════════════════════════════
@@ -1144,12 +1156,25 @@ def main():
                     if metric == "ItemsPerCapita":
                         ta_data["rate"] = ta_data["total_items"] / ta_data["ni_population"] * 1000
                         ta_rate_label = "Items per 1,000 patients"
+                    elif metric == "QuantityPerCapita":
+                        if "total_quantity" in ta_data.columns:
+                            ta_data["rate"] = ta_data["total_quantity"] / ta_data["ni_population"] * 1000
+                        else:
+                            ta_data["rate"] = ta_data["total_items"] / ta_data["ni_population"] * 1000
+                        ta_rate_label = "Tablets per 1,000 patients"
                     else:
                         ta_data["rate"] = ta_data["total_cost"] / ta_data["ni_population"] * 1000
                         ta_rate_label = "Cost (£) per 1,000 patients"
                 else:
-                    ta_data["rate"] = ta_data["total_items"] if metric == "ItemsPerCapita" else ta_data["total_cost"]
-                    ta_rate_label = "Total items" if metric == "ItemsPerCapita" else "Total cost (£)"
+                    if metric == "QuantityPerCapita" and "total_quantity" in ta_data.columns:
+                        ta_data["rate"] = ta_data["total_quantity"]
+                        ta_rate_label = "Total tablets"
+                    elif metric == "ItemsPerCapita":
+                        ta_data["rate"] = ta_data["total_items"]
+                        ta_rate_label = "Total items"
+                    else:
+                        ta_data["rate"] = ta_data["total_cost"]
+                        ta_rate_label = "Total cost (£)"
 
                 fig_ts, ax_ts = plt.subplots(figsize=(12, 4))
                 if smooth_window > 1:
@@ -1183,21 +1208,29 @@ def main():
                 else:
                     lcg_data = ts_lcg[ts_lcg["bnf_chapter"] == selected_chapter].copy()
 
-                ts_metric_val = "items" if metric == "ItemsPerCapita" else "cost"
+                ts_metric_val = {"ItemsPerCapita": "items", "CostPerCapita": "cost", "QuantityPerCapita": "quantity"}.get(metric, "items")
+                if ts_metric_val == "quantity" and "total_quantity" not in lcg_data.columns:
+                    # Fall back to items if quantity not available in LCG data
+                    ts_metric_val = "items"
+                    st.caption("⚠️ Quantity data not available at LCG level for time series. Showing items instead.")
                 if ts_metric_val == "items":
                     lcg_data["rate"] = lcg_data["total_items"] / lcg_data["starpu"]
                     rate_label_ts = "Items per STAR-PU"
+                elif ts_metric_val == "quantity":
+                    lcg_data["rate"] = lcg_data["total_quantity"] / lcg_data["starpu"]
+                    rate_label_ts = "Tablets per STAR-PU"
                 else:
                     lcg_data["rate"] = lcg_data["total_cost"] / lcg_data["starpu"]
                     rate_label_ts = "Cost (£) per STAR-PU"
 
-                ni_data = lcg_data.groupby(["date", "year", "month"]).agg(
-                    total_items=("total_items", "sum"),
-                    total_cost=("total_cost", "sum"),
-                    starpu=("starpu", "sum"),
-                ).reset_index()
+                agg_cols = {"total_items": ("total_items", "sum"), "total_cost": ("total_cost", "sum"), "starpu": ("starpu", "sum")}
+                if "total_quantity" in lcg_data.columns:
+                    agg_cols["total_quantity"] = ("total_quantity", "sum")
+                ni_data = lcg_data.groupby(["date", "year", "month"]).agg(**agg_cols).reset_index()
                 if ts_metric_val == "items":
                     ni_data["rate"] = ni_data["total_items"] / ni_data["starpu"]
+                elif ts_metric_val == "quantity":
+                    ni_data["rate"] = ni_data["total_quantity"] / ni_data["starpu"]
                 else:
                     ni_data["rate"] = ni_data["total_cost"] / ni_data["starpu"]
                 ni_data = ni_data.sort_values("date")
@@ -1564,6 +1597,9 @@ drug groupings, deprivation mapping, and limitations.
                             if metric == "ItemsPerCapita":
                                 ta_data_ni["rate"] = ta_data_ni["total_items"] / ta_data_ni["ni_population"] * 1000
                                 _prac_rate_label = "Items per 1,000 patients"
+                            elif metric == "QuantityPerCapita" and "total_quantity" in ta_data_ni.columns:
+                                ta_data_ni["rate"] = ta_data_ni["total_quantity"] / ta_data_ni["ni_population"] * 1000
+                                _prac_rate_label = "Tablets per 1,000 patients"
                             else:
                                 ta_data_ni["rate"] = ta_data_ni["total_cost"] / ta_data_ni["ni_population"] * 1000
                                 _prac_rate_label = "Cost (£) per 1,000 patients"
@@ -1579,6 +1615,8 @@ drug groupings, deprivation mapping, and limitations.
                                 continue
                             if metric == "ItemsPerCapita":
                                 ps["rate"] = ps["total_items"] / ps["total_population"] * 1000
+                            elif metric == "QuantityPerCapita" and "total_quantity" in ps.columns:
+                                ps["rate"] = ps["total_quantity"] / ps["total_population"] * 1000
                             else:
                                 ps["rate"] = ps["total_cost"] / ps["total_population"] * 1000
                             plabel = pracno_to_label.get(str(pno), str(pno))
@@ -1616,16 +1654,19 @@ drug groupings, deprivation mapping, and limitations.
                 elif not _use_ta and ts_practice is not None:
                     # BNF chapter practice overlay
                     if selected_chapter == 0:
-                        prac_data = ts_practice.groupby(["practice", "date", "year", "month"]).agg(
-                            total_items=("total_items", "sum"),
-                            total_cost=("total_cost", "sum"),
-                            starpu=("starpu", "sum"),
-                            total_population=("total_population", "first"),
-                        ).reset_index()
+                        _agg_dict_ch = {
+                            "total_items": ("total_items", "sum"),
+                            "total_cost": ("total_cost", "sum"),
+                            "starpu": ("starpu", "sum"),
+                            "total_population": ("total_population", "first"),
+                        }
+                        if "total_quantity" in ts_practice.columns:
+                            _agg_dict_ch["total_quantity"] = ("total_quantity", "sum")
+                        prac_data = ts_practice.groupby(["practice", "date", "year", "month"]).agg(**_agg_dict_ch).reset_index()
                     else:
                         prac_data = ts_practice[ts_practice["bnf_chapter"] == selected_chapter].copy()
 
-                    ts_metric_val = "items" if metric == "ItemsPerCapita" else "cost"
+                    ts_metric_val = {"ItemsPerCapita": "items", "CostPerCapita": "cost", "QuantityPerCapita": "quantity"}.get(metric, "items")
                     chapter_title = "All prescribing" if selected_chapter == 0 else BNF_CHAPTERS.get(selected_chapter, f"Chapter {selected_chapter}")
 
                     st.subheader(f"{chapter_title} – practice vs NI")
@@ -1633,14 +1674,24 @@ drug groupings, deprivation mapping, and limitations.
                     colours_ch = plt.cm.Set1(np.linspace(0, 1, max(len(highlight_pracnos), 8)))
 
                     # NI average
-                    ni_agg = prac_data.groupby("date").agg(
-                        total_items=("total_items", "sum"),
-                        total_cost=("total_cost", "sum"),
-                        starpu=("starpu", "sum"),
-                    ).reset_index().sort_values("date")
+                    _ni_agg_dict = {
+                        "total_items": ("total_items", "sum"),
+                        "total_cost": ("total_cost", "sum"),
+                        "starpu": ("starpu", "sum"),
+                    }
+                    if "total_quantity" in prac_data.columns:
+                        _ni_agg_dict["total_quantity"] = ("total_quantity", "sum")
+                    ni_agg = prac_data.groupby("date").agg(**_ni_agg_dict).reset_index().sort_values("date")
                     if ts_metric_val == "items":
                         ni_agg["rate"] = ni_agg["total_items"] / ni_agg["starpu"]
                         _ch_rate_label = "Items per STAR-PU"
+                    elif ts_metric_val == "quantity":
+                        if "total_quantity" in ni_agg.columns:
+                            ni_agg["rate"] = ni_agg["total_quantity"] / ni_agg["starpu"]
+                        else:
+                            ni_agg["rate"] = ni_agg["total_items"] / ni_agg["starpu"]
+                            st.caption("⚠️ Quantity data not available – showing items instead")
+                        _ch_rate_label = "Tablets per STAR-PU"
                     else:
                         ni_agg["rate"] = ni_agg["total_cost"] / ni_agg["starpu"]
                         _ch_rate_label = "Cost (£) per STAR-PU"
@@ -1652,6 +1703,11 @@ drug groupings, deprivation mapping, and limitations.
                             continue
                         if ts_metric_val == "items":
                             prac_subset["rate"] = prac_subset["total_items"] / prac_subset["starpu"]
+                        elif ts_metric_val == "quantity":
+                            if "total_quantity" in prac_subset.columns:
+                                prac_subset["rate"] = prac_subset["total_quantity"] / prac_subset["starpu"]
+                            else:
+                                prac_subset["rate"] = prac_subset["total_items"] / prac_subset["starpu"]
                         else:
                             prac_subset["rate"] = prac_subset["total_cost"] / prac_subset["starpu"]
                         plabel = pracno_to_label.get(str(pno), str(pno))
@@ -1693,10 +1749,19 @@ drug groupings, deprivation mapping, and limitations.
                 profile_chapters = [4, 2, 1, 6, 3, 13]
                 chapter_names_map = {4: "CNS", 2: "Cardiovascular", 1: "GI", 6: "Endocrine", 3: "Respiratory", 13: "Skin"}
 
-                profile_ts_metric = "items" if metric == "ItemsPerCapita" else "cost"
+                profile_ts_metric = {"ItemsPerCapita": "items", "CostPerCapita": "cost", "QuantityPerCapita": "quantity"}.get(metric, "items")
+                if profile_ts_metric == "quantity" and "total_quantity" not in ts_practice.columns:
+                    profile_ts_metric = "items"
                 profile_smooth_w = smooth_window
-                rate_col = "items_per_starpu" if profile_ts_metric == "items" else "cost_per_starpu"
-                rate_label_profile = "Items per STAR-PU" if profile_ts_metric == "items" else "Cost (£) per STAR-PU"
+                if profile_ts_metric == "quantity":
+                    rate_col = "quantity_per_starpu"
+                    rate_label_profile = "Tablets per STAR-PU"
+                elif profile_ts_metric == "items":
+                    rate_col = "items_per_starpu"
+                    rate_label_profile = "Items per STAR-PU"
+                else:
+                    rate_col = "cost_per_starpu"
+                    rate_label_profile = "Cost (£) per STAR-PU"
 
                 def _smooth(series, w):
                     if w > 1:
@@ -1719,12 +1784,17 @@ drug groupings, deprivation mapping, and limitations.
                     if rate_col not in ch_data.columns:
                         if profile_ts_metric == "items":
                             ch_data["items_per_starpu"] = ch_data["total_items"] / ch_data["starpu"]
+                        elif profile_ts_metric == "quantity":
+                            ch_data["quantity_per_starpu"] = ch_data["total_quantity"] / ch_data["starpu"]
                         else:
                             ch_data["cost_per_starpu"] = ch_data["total_cost"] / ch_data["starpu"]
 
                     # NI average
+                    _total_col = {"items": "total_items", "cost": "total_cost", "quantity": "total_quantity"}.get(profile_ts_metric, "total_items")
+                    if _total_col not in ch_data.columns:
+                        _total_col = "total_items"
                     ni_ch = ch_data.groupby("date").agg(
-                        total=("total_items" if profile_ts_metric == "items" else "total_cost", "sum"),
+                        total=(_total_col, "sum"),
                         starpu_sum=("starpu", "sum"),
                     ).reset_index()
                     ni_ch["rate"] = ni_ch["total"] / ni_ch["starpu_sum"]
