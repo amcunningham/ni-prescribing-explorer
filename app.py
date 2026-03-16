@@ -1111,16 +1111,36 @@ def main():
 
         # ── LCG summary table ────────────────────────────────────────────
         lcg = lcg_summary(pc)
-        display_cols = ["LCG", "Practices", "RegisteredPatients", "TotalItems",
-                        "ItemsPerCapita", "TotalCost", "CostPerCapita"]
-        st.dataframe(
-            lcg[display_cols].style.format({
+        if metric == "QuantityPerCapita":
+            display_cols = ["LCG", "Practices", "RegisteredPatients", "TotalQuantity",
+                            "QuantityPerCapita"]
+            _fmt = {
+                "RegisteredPatients": "{:,.0f}",
+                "TotalQuantity": "{:,.0f}",
+                "QuantityPerCapita": "{:,.2f}",
+            }
+        elif metric == "CostPerCapita":
+            display_cols = ["LCG", "Practices", "RegisteredPatients", "TotalCost",
+                            "CostPerCapita"]
+            _fmt = {
+                "RegisteredPatients": "{:,.0f}",
+                "TotalCost": "£{:,.0f}",
+                "CostPerCapita": "£{:.2f}",
+            }
+        else:
+            display_cols = ["LCG", "Practices", "RegisteredPatients", "TotalItems",
+                            "ItemsPerCapita", "TotalCost", "CostPerCapita"]
+            _fmt = {
                 "RegisteredPatients": "{:,.0f}",
                 "TotalItems": "{:,.0f}",
                 "ItemsPerCapita": "{:.2f}",
                 "TotalCost": "£{:,.0f}",
                 "CostPerCapita": "£{:.2f}",
-            }),
+            }
+        # Only include columns that exist
+        display_cols = [c for c in display_cols if c in lcg.columns]
+        st.dataframe(
+            lcg[display_cols].style.format({k: v for k, v in _fmt.items() if k in display_cols}),
             use_container_width=True,
         )
 
