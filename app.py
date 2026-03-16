@@ -1705,6 +1705,13 @@ please contact [Anne Marie Cunningham](mailto:anne.marie.cunningham@gmail.com).
                 st.warning("Could not find data for the selected practice(s).")
             else:
                 # ── Section 1: Selected area — practice vs NI ──
+                if sidebar_drug:
+                    st.info(f"📊 Time series data is not yet available for individual drugs. "
+                            f"The caterpillar chart and practice comparisons on the **Overview** tab show **{sidebar_drug}** data.\n\n"
+                            f"The time series charts below show trends for the selected prescribing area or BNF chapter instead.\n\n"
+                            f"If there is a particular drug you would like to explore time series for, "
+                            f"please contact [Anne Marie Cunningham](mailto:anne.marie.cunningham@gmail.com).")
+
                 if _use_ta and _ta_name and ta_practice is not None and starpu_prac is not None:
                     ta_prac = ta_practice[ta_practice["therapeutic_area"] == _ta_name].copy()
                     ta_chapter = TA_TO_CHAPTER.get(_ta_name)
