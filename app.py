@@ -820,10 +820,10 @@ def main():
         _unified_options.append(("ta:" + _ta_key, _ta_key))
     # — BNF chapters (prefix "ch:")
     if _ts_lcg_check is not None:
-        _avail_chapters = sorted(_ts_lcg_check["bnf_chapter"].unique())
+        _avail_chapters = sorted(int(c) for c in _ts_lcg_check["bnf_chapter"].unique())
         for _ch in _avail_chapters:
             if _ch in BNF_CHAPTERS and _ch != 0:
-                _lbl = f"Ch {_ch}: {BNF_CHAPTERS[_ch]}"
+                _lbl = f"Ch {int(_ch)}: {BNF_CHAPTERS[_ch]}"
                 if _ch in STARPU_CHAPTERS:
                     _lbl += " ★"
                 _unified_options.append((f"ch:{_ch}", _lbl))
@@ -847,7 +847,7 @@ def main():
         selected_chapter = TA_TO_CHAPTER.get(area_name, 0)
     else:
         # BNF chapter selected
-        selected_chapter = int(_sidebar_selection[3:])
+        selected_chapter = int(float(_sidebar_selection[3:]))
         area_name = "All prescribing"
         area = THERAPEUTIC_AREAS["All prescribing"]
 
