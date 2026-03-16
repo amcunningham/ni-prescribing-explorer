@@ -1219,6 +1219,65 @@ def main():
                 plt.close(fig_ts)
                 st.caption("Rates per 1,000 registered patients (raw, not age-sex standardised).")
 
+                # ── LCG breakdown for therapeutic area ────────────────────────
+                if ta_practice is not None and starpu_prac is not None:
+                    # Map practice → LCG
+                    _prac_lcg = practices[["PracNo", "LCG"]].drop_duplicates()
+                    _ta_prac = ta_practice[ta_practice["therapeutic_area"] == _ta_name].copy()
+                    _ta_prac["practice_int"] = _ta_prac["practice"].astype(float).astype(int)
+                    _ta_prac = _ta_prac.merge(_prac_lcg, left_on="practice_int", right_on="PracNo", how="left")
+                    _ta_prac = _ta_prac.dropna(subset=["LCG"])
+
+                    # Population by LCG and year (use chapter 1 for raw population)
+                    _pop_prac = starpu_prac[starpu_prac["bnf_chapter"] == 1][["year", "practice", "total_population"]].copy()
+                    _pop_prac = _pop_prac.merge(_prac_lcg, left_on="practice", right_on="PracNo", how="left")
+                    _lcg_pop = _pop_prac.groupby(["year", "LCG"])["total_population"].sum().reset_index()
+
+                    # Aggregate TA data by LCG
+                    _lcg_ta_agg = {"total_items": "sum", "total_cost": "sum"}
+                    if "total_quantity" in _ta_prac.columns:
+                        _lcg_ta_agg["total_quantity"] = "sum"
+                    _ta_lcg = _ta_prac.groupby(["LCG", "date", "year", "month"]).agg(_lcg_ta_agg).reset_index()
+                    _ta_lcg = _ta_lcg.merge(_lcg_pop, on=["year", "LCG"], how="left")
+
+                    # Compute rate
+                    if metric == "ItemsPerCapita":
+                        _ta_lcg["rate"] = _ta_lcg["total_items"] / _ta_lcg["total_population"] * 1000
+                    elif metric == "QuantityPerCapita" and "total_quantity" in _ta_lcg.columns:
+                        _ta_lcg["rate"] = _ta_lcg["total_quantity"] / _ta_lcg["total_population"] * 1000
+                    else:
+                        _ta_lcg["rate"] = _ta_lcg["total_cost"] / _ta_lcg["total_population"] * 1000
+
+                    lcg_colours = {
+                        "Belfast": "#e11d48", "Northern": "#2563eb",
+                        "South Eastern": "#16a34a", "Southern": "#d97706", "Western": "#7c3aed",
+                    }
+                    fig_lcg_ta, ax_lcg_ta = plt.subplots(figsize=(12, 5))
+                    for lcg_name in sorted(_ta_lcg["LCG"].unique()):
+                        lcg_subset = _ta_lcg[_ta_lcg["LCG"] == lcg_name].sort_values("date")
+                        colour = lcg_colours.get(lcg_name, "#666666")
+                        if smooth_window > 1:
+                            lcg_subset = lcg_subset.copy()
+                            lcg_subset["rate_smooth"] = lcg_subset["rate"].rolling(window=smooth_window, min_periods=smooth_window).mean()
+                            ax_lcg_ta.plot(lcg_subset["date"], lcg_subset["rate"], color=colour, linewidth=0.3, alpha=0.15)
+                            ax_lcg_ta.plot(lcg_subset["date"], lcg_subset["rate_smooth"],
+                                           label=lcg_name, color=colour, linewidth=1.8, alpha=0.9)
+                        else:
+                            ax_lcg_ta.plot(lcg_subset["date"], lcg_subset["rate"],
+                                           label=lcg_name, color=colour, linewidth=1.2, alpha=0.85)
+                    ax_lcg_ta.set_title("By Local Commissioning Group", fontsize=12, fontweight="bold")
+                    ax_lcg_ta.set_ylabel(ta_rate_label, fontsize=10)
+                    ax_lcg_ta.set_xlabel("")
+                    ax_lcg_ta.set_ylim(bottom=0)
+                    ax_lcg_ta.grid(axis="y", alpha=0.3)
+                    ax_lcg_ta.spines["top"].set_visible(False)
+                    ax_lcg_ta.spines["right"].set_visible(False)
+                    ax_lcg_ta.axvspan(_covid_start, _covid_end, alpha=0.08, color="red")
+                    ax_lcg_ta.legend(fontsize=9, loc="best")
+                    fig_lcg_ta.tight_layout()
+                    st.pyplot(fig_lcg_ta)
+                    plt.close(fig_lcg_ta)
+
             else:
                 # BNF chapter NI trend + LCG comparison
                 if selected_chapter == 0:
