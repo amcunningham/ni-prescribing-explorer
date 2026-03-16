@@ -804,7 +804,8 @@ def main():
                 used_months.append(label)
             parts.append(label)
 
-        st.caption(f"Data period: **{', '.join(parts)}** · Monthly average using {len(used_months)} complete month{'s' if len(used_months) != 1 else ''}")
+        st.caption(f"**Snapshot data** (caterpillar charts, practice comparisons, deprivation): **{', '.join(parts)}** · Monthly average using {len(used_months)} complete month{'s' if len(used_months) != 1 else ''}")
+        st.caption("**Time series data** (NI trends, LCG breakdowns): April 2013 – January 2026 (154 months)")
 
     # ════════════════════════════════════════════════════════════════════
     # RESTRUCTURED SIDEBAR
@@ -1164,7 +1165,13 @@ def main():
             st.subheader("NI Prescribing Trends")
             st.caption("Monthly data from April 2013 to January 2026 (154 months)")
 
-            if _use_ta and _ta_name and ta_ni is not None:
+            if sidebar_drug:
+                st.info(f"📊 Time series data is not yet available for individual drugs. "
+                        f"The caterpillar chart and practice comparisons above show **{sidebar_drug}** data. "
+                        f"Select a prescribing area or BNF chapter (without an individual drug) to see time trends.\n\n"
+                        f"If there is a particular drug you would like to explore time series for, "
+                        f"please contact [Anne Marie Cunningham](mailto:anne.marie.cunningham@gmail.com).")
+            elif _use_ta and _ta_name and ta_ni is not None:
                 # Therapeutic area NI trend
                 ta_data = ta_ni[ta_ni["therapeutic_area"] == _ta_name].sort_values("date")
                 if starpu_prac is not None:
@@ -1423,8 +1430,33 @@ The drug lists are based on NICE and BNF guidance. Some deliberate
 exclusions are made where a drug has major indications outside the
 therapeutic area, which would distort practice-level comparisons.
 
-See the **About** tab in the original dashboard for full details on
-drug groupings, deprivation mapping, and limitations.
+### Known limitations
+
+**Deprivation data (NIMDM 2017):** Deprivation is assigned to each practice based on its
+ward-level score from the NI Multiple Deprivation Measure 2017. This is the most recent
+available measure. A ward-level score may not capture the full range of deprivation
+experienced by a practice's registered population, particularly for practices drawing
+patients from multiple wards.
+
+**QOF data (2022/23):** QOF clinical achievement and disease prevalence data is a
+single-year snapshot from 2022/23 and does not reflect changes over time. QOF indicators,
+thresholds, and exception-reporting rules change between years. Disease register sizes
+are affected by coding practices and may undercount true prevalence. Time series
+analysis of prevalence and its correlation with prescribing trends may be added in future.
+
+**Quantity (tablets) metric:** The "quantity" field in the raw prescribing data changed
+its recording methodology at least twice (mid-2013 and April 2017), meaning long-term
+time series for quantity/tablets should be interpreted with caution. Cross-sectional
+comparisons between practices using recent data are not affected.
+
+**Practice list sizes:** Registered patient counts are from the most recent available
+reference file and are used as the denominator for per-capita rates. List sizes change
+over time, which may slightly affect historical per-capita trend calculations.
+
+### Contact
+
+For questions, suggestions, or requests for additional drug-level time series,
+please contact [Anne Marie Cunningham](mailto:anne.marie.cunningham@gmail.com).
 """)
 
 
@@ -1576,7 +1608,10 @@ drug groupings, deprivation mapping, and limitations.
         if highlight_pracnos:
             st.divider()
             st.subheader("Practice-level deprivation analysis")
-            st.caption("Deprivation quintiles based on NIMDM 2017 ward-level scores (1 = most deprived, 5 = least deprived)")
+            st.caption("Deprivation quintiles based on NIMDM 2017 ward-level scores (1 = most deprived, 5 = least deprived). "
+                       "Note: deprivation is assigned at ward level and may not reflect the full range of deprivation within "
+                       "a practice's catchment area. The NIMDM 2017 data is the most recent available. "
+                       "See the methodology section on the Overview tab for more details.")
 
             has_dep = "DepQuintile" in pc.columns and pc["DepQuintile"].notna().any()
             if not has_dep:
@@ -1954,6 +1989,13 @@ drug groupings, deprivation mapping, and limitations.
     if tab_qof is not None:
         with tab_qof:
             st.header("QOF & Disease Prevalence")
+            st.warning(
+                "**Limitations:** QOF achievement and disease prevalence data shown here is a **snapshot from 2022/23** "
+                "and may not reflect current practice performance. QOF indicators and thresholds change over time, "
+                "and the NI QOF framework differs from England's. Prevalence figures are based on practice disease registers, "
+                "which can be affected by coding practices and list size changes. "
+                "See the **methodology section** on the Overview tab for full details on data sources and limitations."
+            )
             # Top-level choice: QOF achievement or disease prevalence
             qof_view = st.radio(
                 "Compare prescribing with",
