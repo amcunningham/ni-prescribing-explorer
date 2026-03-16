@@ -1228,16 +1228,18 @@ def main():
 
                 # ── LCG breakdown for therapeutic area ────────────────────────
                 if ta_practice is not None and starpu_prac is not None:
-                    # Map practice → LCG
-                    _prac_lcg = practices[["PracNo", "LCG"]].drop_duplicates()
+                    # Map practice → LCG (ensure consistent int type for join)
+                    _prac_lcg = practices[["PracNo", "LCG"]].drop_duplicates().copy()
+                    _prac_lcg["_prac_key"] = pd.to_numeric(_prac_lcg["PracNo"], errors="coerce").astype("Int64")
                     _ta_prac = ta_practice[ta_practice["therapeutic_area"] == _ta_name].copy()
-                    _ta_prac["practice_int"] = _ta_prac["practice"].astype(float).astype(int)
-                    _ta_prac = _ta_prac.merge(_prac_lcg, left_on="practice_int", right_on="PracNo", how="left")
+                    _ta_prac["_prac_key"] = pd.to_numeric(_ta_prac["practice"], errors="coerce").astype("Int64")
+                    _ta_prac = _ta_prac.merge(_prac_lcg[["_prac_key", "LCG"]], on="_prac_key", how="left")
                     _ta_prac = _ta_prac.dropna(subset=["LCG"])
 
                     # Population by LCG and year (use chapter 1 for raw population)
                     _pop_prac = starpu_prac[starpu_prac["bnf_chapter"] == 1][["year", "practice", "total_population"]].copy()
-                    _pop_prac = _pop_prac.merge(_prac_lcg, left_on="practice", right_on="PracNo", how="left")
+                    _pop_prac["_prac_key"] = pd.to_numeric(_pop_prac["practice"], errors="coerce").astype("Int64")
+                    _pop_prac = _pop_prac.merge(_prac_lcg[["_prac_key", "LCG"]], on="_prac_key", how="left")
                     _lcg_pop = _pop_prac.groupby(["year", "LCG"])["total_population"].sum().reset_index()
 
                     # Aggregate TA data by LCG
