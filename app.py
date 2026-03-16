@@ -1202,11 +1202,14 @@ def main():
             else:
                 # BNF chapter NI trend + LCG comparison
                 if selected_chapter == 0:
-                    lcg_data = ts_lcg.groupby(["lcg", "date", "year", "month"]).agg(
-                        total_items=("total_items", "sum"),
-                        total_cost=("total_cost", "sum"),
-                        starpu=("starpu", "sum"),
-                    ).reset_index()
+                    _lcg_agg = {
+                        "total_items": ("total_items", "sum"),
+                        "total_cost": ("total_cost", "sum"),
+                        "starpu": ("starpu", "sum"),
+                    }
+                    if "total_quantity" in ts_lcg.columns:
+                        _lcg_agg["total_quantity"] = ("total_quantity", "sum")
+                    lcg_data = ts_lcg.groupby(["lcg", "date", "year", "month"]).agg(**_lcg_agg).reset_index()
                 else:
                     lcg_data = ts_lcg[ts_lcg["bnf_chapter"] == selected_chapter].copy()
 
