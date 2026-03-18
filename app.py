@@ -147,6 +147,10 @@ THERAPEUTIC_AREAS = {
         )],
         "description": "Hormone replacement therapy — includes estrogens, progestogens and combination preparations (NICE NG23)",
     },
+    "Losartan": {
+        "filter": lambda df: df[df["VTM_NM"].str.contains("losartan", case=False, na=False)],
+        "description": "Angiotensin II receptor blocker (ARB) for hypertension, heart failure and diabetic nephropathy (NICE NG136)",
+    },
 }
 
 # ── BNF chapter names ────────────────────────────────────────────────
@@ -581,7 +585,7 @@ def load_starpu_practice():
 
 # Map therapeutic areas to their parent BNF chapter (for STAR-PU lookups)
 TA_TO_CHAPTER = {
-    "Statins": 2, "Ezetimibe": 2, "Anticoagulants": 2, "Antihypertensives": 2,
+    "Statins": 2, "Ezetimibe": 2, "Anticoagulants": 2, "Antihypertensives": 2, "Losartan": 2,
     "PPIs": 1, "UTI antibiotics": 5,
     "Antidepressants": 4, "Gabapentinoids": 4, "Opioids": 4,
     "Diabetes (non-insulin)": 6, "SGLT2 inhibitors": 6, "GLP-1 agonists": 6,
