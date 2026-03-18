@@ -700,6 +700,199 @@ def practice_detail(pc, pracno, ni_mean):
     }
 
 
+def _ordinal(n):
+    """Return number with ordinal suffix: 1st, 2nd, 3rd, 4th, etc."""
+    n = int(round(n))
+    if 11 <= (n % 100) <= 13:
+        return f"{n}th"
+    return f"{n}{['th', 'st', 'nd', 'rd'][min(n % 10, 4)] if n % 10 < 4 else 'th'}"
+
+
+def generate_pen_portrait(merged, pracno, practices_df, starpu_df=None):
+    """Generate a text pen portrait highlighting what is distinctive about a practice."""
+    pracno_str = str(pracno).strip()
+
+    # Basic practice info
+    prac_row = practices_df[practices_df["PracNo"].astype(str).str.strip() == pracno_str]
+    if prac_row.empty:
+        return None
+    prac = prac_row.iloc[0]
+    prac_name = prac.get("PracticeName", pracno_str)
+    if hasattr(prac_name, "strip"):
+        prac_name = prac_name.strip()
+    lcg = prac.get("LCG", "Unknown")
+    federation = prac.get("Federation", None)
+    if federation and hasattr(federation, "strip"):
+        federation = federation.strip()
+    reg_patients = int(prac.get("RegisteredPatients", 0))
+    dep_quintile = prac.get("DepQuintile", None)
+
+    # Size context
+    all_sizes = practices_df["RegisteredPatients"].dropna()
+    size_pctile = (all_sizes <= reg_patients).mean() * 100
+
+    # Compute per-capita for each therapeutic area (excluding "All prescribing")
+    # Uses the cached per_cap_by_name where available
+    ta_results = []
+    for ta_name in THERAPEUTIC_AREAS:
+        if ta_name == "All prescribing":
+            continue
+        try:
+            pc = per_cap_by_name(merged, ta_name)
+        except Exception:
+            continue
+        if pc.empty:
+            continue
+
+        ni_mean_items = pc["ItemsPerCapita"].mean()
+        ni_mean_qty = pc["QuantityPerCapita"].mean()
+        ni_mean_cost = pc["CostPerCapita"].mean()
+
+        row = pc[pc["Practice"].str.strip() == pracno_str]
+        if row.empty:
+            continue
+        r = row.iloc[0]
+
+        n_practices = len(pc)
+        items_pctile = (pc["ItemsPerCapita"] <= r["ItemsPerCapita"]).sum() / n_practices * 100
+        qty_pctile = (pc["QuantityPerCapita"] <= r["QuantityPerCapita"]).sum() / n_practices * 100
+        cost_pctile = (pc["CostPerCapita"] <= r["CostPerCapita"]).sum() / n_practices * 100
+
+        # LCG peer comparison
+        lcg_peers = pc[pc["LCG"] == lcg]
+        lcg_mean_items = lcg_peers["ItemsPerCapita"].mean() if not lcg_peers.empty else ni_mean_items
+
+        ta_results.append({
+            "area": ta_name,
+            "items_pc": r["ItemsPerCapita"],
+            "qty_pc": r["QuantityPerCapita"],
+            "cost_pc": r["CostPerCapita"],
+            "ni_mean_items": ni_mean_items,
+            "ni_mean_qty": ni_mean_qty,
+            "lcg_mean_items": lcg_mean_items,
+            "items_pctile": items_pctile,
+            "qty_pctile": qty_pctile,
+            "cost_pctile": cost_pctile,
+            "vs_ni_pct": ((r["ItemsPerCapita"] - ni_mean_items) / ni_mean_items * 100) if ni_mean_items > 0 else 0,
+            "vs_lcg_pct": ((r["ItemsPerCapita"] - lcg_mean_items) / lcg_mean_items * 100) if lcg_mean_items > 0 else 0,
+        })
+
+    if not ta_results:
+        return None
+
+    # Also compute "All prescribing"
+    pc_all = per_cap(merged, None)
+    row_all = pc_all[pc_all["Practice"].str.strip() == pracno_str]
+    all_items_pc = row_all.iloc[0]["ItemsPerCapita"] if not row_all.empty else None
+    all_items_pctile = (pc_all["ItemsPerCapita"] <= all_items_pc).sum() / len(pc_all) * 100 if all_items_pc else None
+    all_ni_mean = pc_all["ItemsPerCapita"].mean()
+
+    # STAR-PU profile
+    starpu_note = ""
+    if starpu_df is not None:
+        latest_year = starpu_df["year"].max()
+        sp_latest = starpu_df[starpu_df["year"] == latest_year]
+        sp_prac = sp_latest[sp_latest["practice"] == int(pracno_str)]
+        if not sp_prac.empty:
+            # CV chapter (2) STAR-PU per capita as proxy for age-weighting
+            sp_cv = sp_prac[sp_prac["bnf_chapter"] == 2]
+            if not sp_cv.empty:
+                prac_starpu_pc = sp_cv["starpu"].values[0] / sp_cv["total_population"].values[0]
+                all_cv = sp_latest[sp_latest["bnf_chapter"] == 2].copy()
+                all_cv["spc"] = all_cv["starpu"] / all_cv["total_population"]
+                starpu_pctile = (all_cv["spc"] <= prac_starpu_pc).mean() * 100
+                if starpu_pctile < 30:
+                    starpu_note = f"younger-than-average age-sex profile ({_ordinal(starpu_pctile)} percentile for CV STAR-PU weighting)"
+                elif starpu_pctile > 70:
+                    starpu_note = f"older-than-average age-sex profile ({_ordinal(starpu_pctile)} percentile for CV STAR-PU weighting)"
+                else:
+                    starpu_note = f"average age-sex profile ({_ordinal(starpu_pctile)} percentile for CV STAR-PU weighting)"
+
+    # Identify notable areas (high or low outliers)
+    HIGH_THRESHOLD = 75  # percentile
+    LOW_THRESHOLD = 25
+    high_areas = [r for r in ta_results if r["items_pctile"] >= HIGH_THRESHOLD]
+    low_areas = [r for r in ta_results if r["items_pctile"] <= LOW_THRESHOLD]
+    mid_areas = [r for r in ta_results if LOW_THRESHOLD < r["items_pctile"] < HIGH_THRESHOLD]
+
+    high_areas.sort(key=lambda x: x["items_pctile"], reverse=True)
+    low_areas.sort(key=lambda x: x["items_pctile"])
+
+    # Items vs quantity divergence
+    divergent = [r for r in ta_results
+                 if abs(r["items_pctile"] - r["qty_pctile"]) > 20 and r["qty_pc"] > 0]
+    divergent.sort(key=lambda x: abs(x["items_pctile"] - x["qty_pctile"]), reverse=True)
+
+    # Build portrait text
+    lines = []
+
+    # Opening paragraph
+    dep_text = ""
+    if dep_quintile and not pd.isna(dep_quintile):
+        dep_labels = {1: "most deprived", 2: "second most deprived", 3: "mid-range", 4: "second least deprived", 5: "least deprived"}
+        dep_text = f" in the {dep_labels.get(int(dep_quintile), '')} deprivation quintile"
+
+    fed_text = f" ({federation} federation)" if federation else ""
+    size_desc = "small" if size_pctile < 25 else "large" if size_pctile > 75 else "medium-sized"
+
+    lines.append(
+        f"**{prac_name}** is a {size_desc} practice ({reg_patients:,} patients, "
+        f"{_ordinal(size_pctile)} percentile for size) in {lcg} LCG{fed_text}{dep_text}."
+    )
+
+    if starpu_note:
+        lines.append(f"It has an {starpu_note}.")
+
+    # Overall prescribing
+    if all_items_pc is not None:
+        lines.append(
+            f"Overall prescribing is {all_items_pc:.1f} items per patient per month "
+            f"({_ordinal(all_items_pctile)} percentile; NI average {all_ni_mean:.1f})."
+        )
+
+    # High areas
+    if high_areas:
+        parts = []
+        for h in high_areas[:4]:
+            parts.append(f"{h['area']} ({_ordinal(h['items_pctile'])} percentile, {h['vs_ni_pct']:+.0f}% vs NI)")
+        lines.append("**Above average:** " + "; ".join(parts) + ".")
+
+    # Low areas
+    if low_areas:
+        parts = []
+        for l in low_areas[:4]:
+            parts.append(f"{l['area']} ({_ordinal(l['items_pctile'])} percentile, {l['vs_ni_pct']:+.0f}% vs NI)")
+        lines.append("**Below average:** " + "; ".join(parts) + ".")
+
+    # Mid areas
+    if mid_areas:
+        names = [m["area"] for m in mid_areas]
+        lines.append(f"**Near average:** {', '.join(names)}.")
+
+    # Items vs quantity divergence
+    if divergent:
+        div_parts = []
+        for d in divergent[:3]:
+            direction = "higher" if d["qty_pctile"] > d["items_pctile"] else "lower"
+            div_parts.append(
+                f"{d['area']} (items {_ordinal(d['items_pctile'])} → tablets {_ordinal(d['qty_pctile'])} percentile, "
+                f"suggesting {direction} actual volume than items alone suggest)"
+            )
+        lines.append("**Items vs tablets divergence:** " + "; ".join(div_parts) + ".")
+
+    # LCG comparison
+    vs_lcg_notable = [r for r in ta_results if abs(r["vs_lcg_pct"]) > 20]
+    if vs_lcg_notable:
+        vs_lcg_notable.sort(key=lambda x: abs(x["vs_lcg_pct"]), reverse=True)
+        lcg_parts = []
+        for v in vs_lcg_notable[:3]:
+            direction = "above" if v["vs_lcg_pct"] > 0 else "below"
+            lcg_parts.append(f"{v['area']} ({v['vs_lcg_pct']:+.0f}% vs {lcg} average)")
+        lines.append(f"**Compared to {lcg} LCG peers:** notable differences in " + "; ".join(lcg_parts) + ".")
+
+    return "\n\n".join(lines)
+
+
 # ── Consistent LCG colour palette ─────────────────────────────────────
 LCG_COLOURS = {
     "Belfast": "#2196F3",
@@ -1303,29 +1496,55 @@ def main():
 
                 ts_metric_val = {"ItemsPerCapita": "items", "CostPerCapita": "cost", "QuantityPerCapita": "quantity"}.get(metric, "items")
                 if ts_metric_val == "quantity" and "total_quantity" not in lcg_data.columns:
-                    # Fall back to items if quantity not available in LCG data
                     ts_metric_val = "items"
                     st.caption("⚠️ Quantity data not available at LCG level for time series. Showing items instead.")
+
+                # For raw per-capita rates, compute LCG population from practice-level STAR-PU data
+                if not use_starpu and starpu_prac is not None:
+                    _pop_for_lcg = starpu_prac[starpu_prac["bnf_chapter"] == 1][["year", "practice", "total_population"]].copy()
+                    _prac_lcg_map = practices[["PracNo", "LCG"]].copy()
+                    _prac_lcg_map["practice"] = pd.to_numeric(_prac_lcg_map["PracNo"], errors="coerce").astype("Int64")
+                    _pop_for_lcg["practice"] = _pop_for_lcg["practice"].astype("Int64")
+                    _pop_for_lcg = _pop_for_lcg.merge(
+                        _prac_lcg_map[["practice", "LCG"]],
+                        on="practice", how="left"
+                    )
+                    _pop_for_lcg["LCG"] = _pop_for_lcg["LCG"].str.strip()
+                    _lcg_pop_yr = _pop_for_lcg.groupby(["year", "LCG"])["total_population"].sum().reset_index()
+                    lcg_data = lcg_data.merge(_lcg_pop_yr.rename(columns={"LCG": "lcg"}), on=["lcg", "year"], how="left")
+                    # Fill any missing population with nearest year
+                    if lcg_data["total_population"].isna().any():
+                        _fill = _lcg_pop_yr.groupby("LCG")["total_population"].first().to_dict()
+                        lcg_data["total_population"] = lcg_data.apply(
+                            lambda r: r["total_population"] if pd.notna(r["total_population"]) else _fill.get(r["lcg"], None), axis=1
+                        )
+
+                _ts_denom = "starpu" if use_starpu else "total_population"
+                _ts_scale = 1 if use_starpu else 1000
+                _ts_denom_label = "STAR-PU" if use_starpu else "1,000 patients"
+
                 if ts_metric_val == "items":
-                    lcg_data["rate"] = lcg_data["total_items"] / lcg_data["starpu"]
-                    rate_label_ts = "Items per STAR-PU"
+                    lcg_data["rate"] = lcg_data["total_items"] / lcg_data[_ts_denom] * _ts_scale
+                    rate_label_ts = f"Items per {_ts_denom_label}"
                 elif ts_metric_val == "quantity":
-                    lcg_data["rate"] = lcg_data["total_quantity"] / lcg_data["starpu"]
-                    rate_label_ts = "Tablets per STAR-PU"
+                    lcg_data["rate"] = lcg_data["total_quantity"] / lcg_data[_ts_denom] * _ts_scale
+                    rate_label_ts = f"Tablets per {_ts_denom_label}"
                 else:
-                    lcg_data["rate"] = lcg_data["total_cost"] / lcg_data["starpu"]
-                    rate_label_ts = "Cost (£) per STAR-PU"
+                    lcg_data["rate"] = lcg_data["total_cost"] / lcg_data[_ts_denom] * _ts_scale
+                    rate_label_ts = f"Cost (£) per {_ts_denom_label}"
 
                 agg_cols = {"total_items": ("total_items", "sum"), "total_cost": ("total_cost", "sum"), "starpu": ("starpu", "sum")}
                 if "total_quantity" in lcg_data.columns:
                     agg_cols["total_quantity"] = ("total_quantity", "sum")
+                if "total_population" in lcg_data.columns:
+                    agg_cols["total_population"] = ("total_population", "sum")
                 ni_data = lcg_data.groupby(["date", "year", "month"]).agg(**agg_cols).reset_index()
                 if ts_metric_val == "items":
-                    ni_data["rate"] = ni_data["total_items"] / ni_data["starpu"]
+                    ni_data["rate"] = ni_data["total_items"] / ni_data[_ts_denom] * _ts_scale
                 elif ts_metric_val == "quantity":
-                    ni_data["rate"] = ni_data["total_quantity"] / ni_data["starpu"]
+                    ni_data["rate"] = ni_data["total_quantity"] / ni_data[_ts_denom] * _ts_scale
                 else:
-                    ni_data["rate"] = ni_data["total_cost"] / ni_data["starpu"]
+                    ni_data["rate"] = ni_data["total_cost"] / ni_data[_ts_denom] * _ts_scale
                 ni_data = ni_data.sort_values("date")
 
                 chapter_title = "All prescribing" if selected_chapter == 0 else BNF_CHAPTERS.get(selected_chapter, f"Chapter {selected_chapter}")
@@ -1706,6 +1925,20 @@ please contact [Anne Marie Cunningham](mailto:anne.marie.cunningham@gmail.com).
             if not _profile_infos:
                 st.warning("Could not find data for the selected practice(s).")
             else:
+                # ── Pen portrait(s) ──────────────────────────────────
+                for _pp_info in _profile_infos:
+                    with st.expander(f"📋 Pen portrait — {_pp_info['display']}", expanded=len(_profile_infos) == 1):
+                        with st.spinner("Generating portrait…"):
+                            _portrait = generate_pen_portrait(
+                                merged, _pp_info["pracno_int"], practices, starpu_prac
+                            )
+                        if _portrait:
+                            st.markdown(_portrait)
+                        else:
+                            st.caption("Could not generate portrait for this practice.")
+
+                st.divider()
+
                 # ── Section 1: Selected area — practice vs NI ──
                 if sidebar_drug:
                     st.info(f"📊 Time series data is not yet available for individual drugs. "
@@ -1816,23 +2049,30 @@ please contact [Anne Marie Cunningham](mailto:anne.marie.cunningham@gmail.com).
                         "total_items": ("total_items", "sum"),
                         "total_cost": ("total_cost", "sum"),
                         "starpu": ("starpu", "sum"),
+                        "total_population": ("total_population", "sum"),
                     }
                     if "total_quantity" in prac_data.columns:
                         _ni_agg_dict["total_quantity"] = ("total_quantity", "sum")
                     ni_agg = prac_data.groupby("date").agg(**_ni_agg_dict).reset_index().sort_values("date")
+
+                    # Choose denominator based on rate type
+                    _denom_col = "starpu" if use_starpu else "total_population"
+                    _denom_label = "STAR-PU" if use_starpu else "1,000 patients"
+                    _denom_scale = 1 if use_starpu else 1000  # multiply numerator for per-1000
+
                     if ts_metric_val == "items":
-                        ni_agg["rate"] = ni_agg["total_items"] / ni_agg["starpu"]
-                        _ch_rate_label = "Items per STAR-PU"
+                        ni_agg["rate"] = ni_agg["total_items"] / ni_agg[_denom_col] * (1 if use_starpu else 1000)
+                        _ch_rate_label = f"Items per {_denom_label}"
                     elif ts_metric_val == "quantity":
                         if "total_quantity" in ni_agg.columns:
-                            ni_agg["rate"] = ni_agg["total_quantity"] / ni_agg["starpu"]
+                            ni_agg["rate"] = ni_agg["total_quantity"] / ni_agg[_denom_col] * (1 if use_starpu else 1000)
                         else:
-                            ni_agg["rate"] = ni_agg["total_items"] / ni_agg["starpu"]
+                            ni_agg["rate"] = ni_agg["total_items"] / ni_agg[_denom_col] * (1 if use_starpu else 1000)
                             st.caption("⚠️ Quantity data not available – showing items instead")
-                        _ch_rate_label = "Tablets per STAR-PU"
+                        _ch_rate_label = f"Tablets per {_denom_label}"
                     else:
-                        ni_agg["rate"] = ni_agg["total_cost"] / ni_agg["starpu"]
-                        _ch_rate_label = "Cost (£) per STAR-PU"
+                        ni_agg["rate"] = ni_agg["total_cost"] / ni_agg[_denom_col] * (1 if use_starpu else 1000)
+                        _ch_rate_label = f"Cost (£) per {_denom_label}"
 
                     for idx_p, pno in enumerate(highlight_pracnos[:5]):
                         pno_int = int(pno) if str(pno).isdigit() else pno
@@ -1840,14 +2080,14 @@ please contact [Anne Marie Cunningham](mailto:anne.marie.cunningham@gmail.com).
                         if prac_subset.empty:
                             continue
                         if ts_metric_val == "items":
-                            prac_subset["rate"] = prac_subset["total_items"] / prac_subset["starpu"]
+                            prac_subset["rate"] = prac_subset["total_items"] / prac_subset[_denom_col] * (1 if use_starpu else 1000)
                         elif ts_metric_val == "quantity":
                             if "total_quantity" in prac_subset.columns:
-                                prac_subset["rate"] = prac_subset["total_quantity"] / prac_subset["starpu"]
+                                prac_subset["rate"] = prac_subset["total_quantity"] / prac_subset[_denom_col] * (1 if use_starpu else 1000)
                             else:
-                                prac_subset["rate"] = prac_subset["total_items"] / prac_subset["starpu"]
+                                prac_subset["rate"] = prac_subset["total_items"] / prac_subset[_denom_col] * (1 if use_starpu else 1000)
                         else:
-                            prac_subset["rate"] = prac_subset["total_cost"] / prac_subset["starpu"]
+                            prac_subset["rate"] = prac_subset["total_cost"] / prac_subset[_denom_col] * (1 if use_starpu else 1000)
                         plabel = pracno_to_label.get(str(pno), str(pno))
                         if len(plabel) > 40:
                             plabel = plabel[:37] + "…"
