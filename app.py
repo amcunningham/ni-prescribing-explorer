@@ -151,6 +151,10 @@ THERAPEUTIC_AREAS = {
         "filter": lambda df: df[df["VTM_NM"].str.contains("losartan", case=False, na=False)],
         "description": "Angiotensin II receptor blocker (ARB) for hypertension, heart failure and diabetic nephropathy (NICE NG136)",
     },
+    "Ramipril": {
+        "filter": lambda df: df[df["VTM_NM"].str.contains("ramipril", case=False, na=False)],
+        "description": "ACE inhibitor for hypertension, heart failure, post-MI and diabetic nephropathy (NICE NG136)",
+    },
 }
 
 # ── BNF chapter names ────────────────────────────────────────────────
@@ -549,7 +553,7 @@ def load_timeseries_practice():
 
 @st.cache_data(show_spinner="Loading therapeutic area time-series…")
 def load_ta_ni():
-    """Load NI-level monthly therapeutic area time series (v2 – includes Losartan)."""
+    """Load NI-level monthly therapeutic area time series (v3 – includes Losartan, Ramipril)."""
     if os.path.exists(PARQUET_TA_NI):
         df = pd.read_parquet(PARQUET_TA_NI)
         df["year"] = df["year"].astype(int)
@@ -562,7 +566,7 @@ def load_ta_ni():
 
 
 @st.cache_data(show_spinner="Loading therapeutic area practice data…")
-def load_ta_practice():  # v2 – includes Losartan
+def load_ta_practice():  # v3 – includes Losartan, Ramipril
     """Load practice-level monthly therapeutic area time series."""
     if os.path.exists(PARQUET_TA_PRACTICE):
         df = pd.read_parquet(PARQUET_TA_PRACTICE)
@@ -585,7 +589,7 @@ def load_starpu_practice():
 
 # Map therapeutic areas to their parent BNF chapter (for STAR-PU lookups)
 TA_TO_CHAPTER = {
-    "Statins": 2, "Ezetimibe": 2, "Anticoagulants": 2, "Antihypertensives": 2, "Losartan": 2,
+    "Statins": 2, "Ezetimibe": 2, "Anticoagulants": 2, "Antihypertensives": 2, "Losartan": 2, "Ramipril": 2,
     "PPIs": 1, "UTI antibiotics": 5,
     "Antidepressants": 4, "Gabapentinoids": 4, "Opioids": 4,
     "Diabetes (non-insulin)": 6, "SGLT2 inhibitors": 6, "GLP-1 agonists": 6,
