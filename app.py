@@ -553,7 +553,7 @@ def load_timeseries_practice():
 
 @st.cache_data(show_spinner="Loading therapeutic area time-series…")
 def load_ta_ni():
-    """Load NI-level monthly therapeutic area time series (v3 – includes Losartan, Ramipril)."""
+    """Load NI-level monthly therapeutic area time series (v4 – deduped Oct-Dec 2025)."""
     if os.path.exists(PARQUET_TA_NI):
         df = pd.read_parquet(PARQUET_TA_NI)
         df["year"] = df["year"].astype(int)
@@ -566,7 +566,7 @@ def load_ta_ni():
 
 
 @st.cache_data(show_spinner="Loading therapeutic area practice data…")
-def load_ta_practice():  # v3 – includes Losartan, Ramipril
+def load_ta_practice():  # v4 – deduped Oct-Dec 2025
     """Load practice-level monthly therapeutic area time series."""
     if os.path.exists(PARQUET_TA_PRACTICE):
         df = pd.read_parquet(PARQUET_TA_PRACTICE)
