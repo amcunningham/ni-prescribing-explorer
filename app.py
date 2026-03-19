@@ -1049,15 +1049,16 @@ def main():
     # ════════════════════════════════════════════════════════════════════
     # NEW 4-TAB STRUCTURE
     # ════════════════════════════════════════════════════════════════════
-    tab_names = ["Overview", "Practices", "Practice Profile"]
+    tab_names = ["Overview", "Practices", "Practice Profile", "Compare"]
     if qof_df is not None or prev_df is not None:
         tab_names.append("QOF")
     tabs = st.tabs(tab_names)
     tab_overview = tabs[0]
     tab_practices = tabs[1]
     tab_profile = tabs[2]
+    tab_compare = tabs[3]
     if qof_df is not None or prev_df is not None:
-        tab_qof = tabs[3]
+        tab_qof = tabs[4]
     else:
         tab_qof = None
 
@@ -2050,7 +2051,166 @@ please contact [Anne Marie Cunningham](mailto:anne.marie.cunningham@gmail.com).
                 )
 
     # ════════════════════════════════════════════════════════════════════
-    # TAB 4: QOF (Optional)
+    # TAB 4: COMPARE
+    # ════════════════════════════════════════════════════════════════════
+    with tab_compare:
+        st.header("Compare Therapeutic Areas")
+        st.caption("Compare NI-wide time series for two or more prescribing areas on the same chart.")
+
+        if ta_ni is not None and starpu_prac is not None:
+            # Get available TAs from parquet data
+            _compare_ta_available = sorted(ta_ni["therapeutic_area"].unique().tolist())
+
+            # Map parquet names back to display names
+            _pq_to_app = {v: k for k, v in TA_APP_TO_PARQUET.items()}
+            _compare_display = [_pq_to_app.get(t, t) for t in _compare_ta_available]
+
+            _compare_selected = st.multiselect(
+                "Select therapeutic areas to compare",
+                options=_compare_ta_available,
+                format_func=lambda x, _m=dict(zip(_compare_ta_available, _compare_display)): _m.get(x, x),
+                default=["Losartan", "Ramipril"] if "Losartan" in _compare_ta_available and "Ramipril" in _compare_ta_available else _compare_ta_available[:2],
+                key="compare_ta_select",
+            )
+
+            if len(_compare_selected) < 2:
+                st.info("Select at least two therapeutic areas to compare.")
+            else:
+                # Get NI population by year for per-capita rates
+                _cmp_pop = starpu_prac[starpu_prac["bnf_chapter"] == 1].groupby("year")["total_population"].sum().reset_index()
+                _cmp_pop.columns = ["year", "population"]
+                _cmp_latest_pop = _cmp_pop.loc[_cmp_pop["year"] == _cmp_pop["year"].max(), "population"].iloc[0]
+
+                _cmp_metric = st.radio(
+                    "Metric",
+                    ["Items per 1,000 patients", "Cost (£) per 1,000 patients"],
+                    horizontal=True,
+                    key="compare_metric",
+                )
+
+                _cmp_colours = ["#e11d48", "#2563eb", "#16a34a", "#d97706", "#7c3aed",
+                                "#0891b2", "#be185d", "#4f46e5", "#059669", "#dc2626"]
+
+                # ── Chart 1: Overlaid time series ──
+                fig_cmp, ax_cmp = plt.subplots(figsize=(12, 5))
+
+                for _ci, _ta in enumerate(_compare_selected):
+                    _ta_data = ta_ni[ta_ni["therapeutic_area"] == _ta].copy()
+                    _ta_data["year"] = _ta_data["year"].astype(int)
+                    _ta_data["month"] = _ta_data["month"].astype(int)
+                    _ta_data["date"] = pd.to_datetime(
+                        _ta_data["year"].astype(str) + "-" + _ta_data["month"].astype(str).str.zfill(2) + "-01"
+                    )
+                    _ta_data = _ta_data.merge(_cmp_pop, on="year", how="left")
+                    _ta_data["population"] = _ta_data["population"].fillna(_cmp_latest_pop)
+
+                    if "Items" in _cmp_metric:
+                        _ta_data["rate"] = _ta_data["total_items"] / _ta_data["population"] * 1000
+                    else:
+                        _ta_data["rate"] = _ta_data["total_cost"] / _ta_data["population"] * 1000
+
+                    _ta_data = _ta_data.sort_values("date")
+                    _colour = _cmp_colours[_ci % len(_cmp_colours)]
+                    _disp_name = _pq_to_app.get(_ta, _ta)
+
+                    if smooth_window > 1:
+                        _ta_data["rate_smooth"] = _ta_data["rate"].rolling(window=smooth_window, min_periods=smooth_window).mean()
+                        ax_cmp.plot(_ta_data["date"], _ta_data["rate"], color=_colour, linewidth=0.3, alpha=0.15)
+                        ax_cmp.plot(_ta_data["date"], _ta_data["rate_smooth"], label=_disp_name, color=_colour, linewidth=2)
+                    else:
+                        ax_cmp.plot(_ta_data["date"], _ta_data["rate"], label=_disp_name, color=_colour, linewidth=1.5)
+
+                ax_cmp.axvspan(_covid_start, _covid_end, alpha=0.08, color="red")
+                ax_cmp.set_ylabel(_cmp_metric, fontsize=10)
+                ax_cmp.set_xlabel("")
+                ax_cmp.set_ylim(bottom=0)
+                ax_cmp.grid(axis="y", alpha=0.3)
+                ax_cmp.spines["top"].set_visible(False)
+                ax_cmp.spines["right"].set_visible(False)
+                ax_cmp.legend(fontsize=9, loc="best")
+                fig_cmp.tight_layout()
+                st.pyplot(fig_cmp)
+                plt.close(fig_cmp)
+
+                # ── Chart 2: Indexed (rebased to 100) ──
+                st.subheader("Indexed trend (rebased to 100)")
+                st.caption("Shows relative growth — each area starts at 100 at the beginning of the period, "
+                           "so you can compare rates of change regardless of absolute volume.")
+                fig_idx, ax_idx = plt.subplots(figsize=(12, 5))
+
+                for _ci, _ta in enumerate(_compare_selected):
+                    _ta_data = ta_ni[ta_ni["therapeutic_area"] == _ta].copy()
+                    _ta_data["year"] = _ta_data["year"].astype(int)
+                    _ta_data["month"] = _ta_data["month"].astype(int)
+                    _ta_data["date"] = pd.to_datetime(
+                        _ta_data["year"].astype(str) + "-" + _ta_data["month"].astype(str).str.zfill(2) + "-01"
+                    )
+                    _ta_data = _ta_data.merge(_cmp_pop, on="year", how="left")
+                    _ta_data["population"] = _ta_data["population"].fillna(_cmp_latest_pop)
+
+                    if "Items" in _cmp_metric:
+                        _ta_data["rate"] = _ta_data["total_items"] / _ta_data["population"] * 1000
+                    else:
+                        _ta_data["rate"] = _ta_data["total_cost"] / _ta_data["population"] * 1000
+
+                    _ta_data = _ta_data.sort_values("date")
+
+                    if smooth_window > 1:
+                        _ta_data["rate_smooth"] = _ta_data["rate"].rolling(window=smooth_window, min_periods=smooth_window).mean()
+                        _rate_col = "rate_smooth"
+                    else:
+                        _rate_col = "rate"
+
+                    _base = _ta_data[_rate_col].dropna().iloc[0] if _ta_data[_rate_col].dropna().any() else 1
+                    _ta_data["indexed"] = _ta_data[_rate_col] / _base * 100
+
+                    _colour = _cmp_colours[_ci % len(_cmp_colours)]
+                    _disp_name = _pq_to_app.get(_ta, _ta)
+                    ax_idx.plot(_ta_data["date"], _ta_data["indexed"], label=_disp_name, color=_colour, linewidth=2)
+
+                ax_idx.axhline(100, color="#999", linewidth=1, linestyle="--", alpha=0.5)
+                ax_idx.axvspan(_covid_start, _covid_end, alpha=0.08, color="red")
+                ax_idx.set_ylabel("Index (start = 100)", fontsize=10)
+                ax_idx.set_xlabel("")
+                ax_idx.grid(axis="y", alpha=0.3)
+                ax_idx.spines["top"].set_visible(False)
+                ax_idx.spines["right"].set_visible(False)
+                ax_idx.legend(fontsize=9, loc="best")
+                fig_idx.tight_layout()
+                st.pyplot(fig_idx)
+                plt.close(fig_idx)
+
+                # ── Summary table ──
+                st.subheader("Summary")
+                _summary_rows = []
+                for _ta in _compare_selected:
+                    _ta_data = ta_ni[ta_ni["therapeutic_area"] == _ta].copy()
+                    _latest = _ta_data[(_ta_data["year"] == 2025) & (_ta_data["month"].isin([10, 11, 12]))]
+                    _early = _ta_data.nsmallest(3, ["year", "month"])
+
+                    _latest_items = _latest["total_items"].sum() / 3  # monthly avg
+                    _latest_cost = _latest["total_cost"].sum() / 3
+                    _early_items = _early["total_items"].sum() / 3
+                    _early_cost = _early["total_cost"].sum() / 3
+
+                    _items_change = ((_latest_items / _early_items) - 1) * 100 if _early_items > 0 else 0
+                    _cost_change = ((_latest_cost / _early_cost) - 1) * 100 if _early_cost > 0 else 0
+
+                    _disp_name = _pq_to_app.get(_ta, _ta)
+                    _summary_rows.append({
+                        "Therapeutic area": _disp_name,
+                        "Items/month (latest)": f"{_latest_items:,.0f}",
+                        "Cost/month (latest)": f"£{_latest_cost:,.0f}",
+                        "Items change since 2013": f"{_items_change:+.0f}%",
+                        "Cost change since 2013": f"{_cost_change:+.0f}%",
+                    })
+                st.dataframe(pd.DataFrame(_summary_rows), hide_index=True, use_container_width=True)
+
+        else:
+            st.info("Time series data not available for comparisons.")
+
+    # ════════════════════════════════════════════════════════════════════
+    # TAB 5: QOF (Optional)
     # ════════════════════════════════════════════════════════════════════
     if tab_qof is not None:
         with tab_qof:
