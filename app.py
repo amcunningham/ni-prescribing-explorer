@@ -1468,7 +1468,9 @@ expected* for its population mix.
 
 STAR-PU weights are available for 10 BNF chapters (1: GI, 2: Cardiovascular,
 3: Respiratory, 4: CNS, 5: Infections, 6: Endocrine, 7: Obs/Gynae/UT,
-9: Nutrition, 10: MSK, 13: Skin) and 24 BNF sections/paragraphs.
+9: Nutrition, 10: MSK, 13: Skin) and 24 BNF sections/paragraphs. This app
+currently uses the chapter-level weights. The 24 section/paragraph-level
+weights could be incorporated in future.
 
 ### Therapeutic area drug groupings
 
