@@ -581,7 +581,7 @@ def load_ta_practice():  # v4 – deduped Oct-Dec 2025
 
 @st.cache_data(show_spinner="Loading STAR-PU denominators…")
 def load_starpu_practice():
-    """Load practice-level STAR-PU denominators by year and chapter."""
+    """Load practice-level STAR-PU denominators by year and chapter (v2 – NI weights)."""
     if os.path.exists(PARQUET_STARPU_PRACTICE):
         return pd.read_parquet(PARQUET_STARPU_PRACTICE)
     return None
