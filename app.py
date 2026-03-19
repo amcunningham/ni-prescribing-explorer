@@ -1189,7 +1189,7 @@ def main():
                     ni_pop.columns = ["year", "ni_population"]
                     ta_data = ta_data.merge(ni_pop, on="year", how="left")
                     if ta_data["ni_population"].isna().any():
-                        _fill_pop = ni_pop["ni_population"].iloc[0] if len(ni_pop) > 0 else None
+                        _fill_pop = ni_pop.loc[ni_pop["year"] == ni_pop["year"].max(), "ni_population"].iloc[0] if len(ni_pop) > 0 else None
                         if _fill_pop:
                             ta_data["ni_population"] = ta_data["ni_population"].fillna(_fill_pop)
                     if metric == "ItemsPerCapita":
@@ -1258,6 +1258,13 @@ def main():
                         _lcg_ta_agg["total_quantity"] = "sum"
                     _ta_lcg = _ta_prac.groupby(["LCG", "date", "year", "month"]).agg(_lcg_ta_agg).reset_index()
                     _ta_lcg = _ta_lcg.merge(_lcg_pop, on=["year", "LCG"], how="left")
+                    # Forward-fill missing population (years beyond denominator data)
+                    if _ta_lcg["total_population"].isna().any():
+                        _latest_lcg_pop = _lcg_pop[_lcg_pop["year"] == _lcg_pop["year"].max()][["LCG", "total_population"]].copy()
+                        _latest_lcg_pop.columns = ["LCG", "_fill_pop"]
+                        _ta_lcg = _ta_lcg.merge(_latest_lcg_pop, on="LCG", how="left")
+                        _ta_lcg["total_population"] = _ta_lcg["total_population"].fillna(_ta_lcg["_fill_pop"])
+                        _ta_lcg.drop(columns=["_fill_pop"], inplace=True)
 
                     # Compute rate
                     if metric == "ItemsPerCapita":
@@ -1758,6 +1765,14 @@ please contact [Anne Marie Cunningham](mailto:anne.marie.cunningham@gmail.com).
                     if ta_chapter and not ta_prac.empty:
                         sp_ch = starpu_prac[starpu_prac["bnf_chapter"] == ta_chapter][["year", "practice", "total_population"]].copy()
                         ta_prac = ta_prac.merge(sp_ch, on=["year", "practice"], how="left")
+                        # Forward-fill missing population (e.g. 2026 data with no 2026 denominators yet)
+                        if ta_prac["total_population"].isna().any():
+                            _latest_yr = sp_ch["year"].max()
+                            _latest_pop = sp_ch[sp_ch["year"] == _latest_yr][["practice", "total_population"]].copy()
+                            _latest_pop.columns = ["practice", "_fill_pop"]
+                            ta_prac = ta_prac.merge(_latest_pop, on="practice", how="left")
+                            ta_prac["total_population"] = ta_prac["total_population"].fillna(ta_prac["_fill_pop"])
+                            ta_prac.drop(columns=["_fill_pop"], inplace=True)
 
                         # Compute NI rate for overlay
                         if ta_data_ni is not None and starpu_prac is not None:
@@ -1765,9 +1780,8 @@ please contact [Anne Marie Cunningham](mailto:anne.marie.cunningham@gmail.com).
                             ni_pop.columns = ["year", "ni_population"]
                             ta_data_ni = ta_data_ni.merge(ni_pop, on="year", how="left")
                             if ta_data_ni["ni_population"].isna().any():
-                                _fill_pop = ni_pop["ni_population"].iloc[0] if len(ni_pop) > 0 else None
-                                if _fill_pop:
-                                    ta_data_ni["ni_population"] = ta_data_ni["ni_population"].fillna(_fill_pop)
+                                _fill_pop = ni_pop.loc[ni_pop["year"] == ni_pop["year"].max(), "ni_population"].iloc[0]
+                                ta_data_ni["ni_population"] = ta_data_ni["ni_population"].fillna(_fill_pop)
                             if metric == "ItemsPerCapita":
                                 ta_data_ni["rate"] = ta_data_ni["total_items"] / ta_data_ni["ni_population"] * 1000
                                 _prac_rate_label = "Items per 1,000 patients"
