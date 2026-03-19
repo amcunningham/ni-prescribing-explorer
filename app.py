@@ -2206,6 +2206,333 @@ please contact [Anne Marie Cunningham](mailto:anne.marie.cunningham@gmail.com).
                     })
                 st.dataframe(pd.DataFrame(_summary_rows), hide_index=True, use_container_width=True)
 
+                # ── LCG comparison (snapshot bar chart) ──
+                st.divider()
+                st.subheader("By Local Commissioning Group")
+                st.caption("Snapshot: Oct–Dec 2025 monthly average per 1,000 registered patients")
+
+                # Build LCG rates for each selected TA from snapshot data
+                _lcg_bar_rows = []
+                for _ta in _compare_selected:
+                    _disp = _pq_to_app.get(_ta, _ta)
+                    _ta_def = THERAPEUTIC_AREAS.get(_disp)
+                    if _ta_def and _ta_def["filter"] is not None:
+                        _pc = per_cap(merged, _ta_def["filter"])
+                    else:
+                        continue
+                    _pc["LCG"] = _pc["LCG"].str.strip() if "LCG" in _pc.columns else "Unknown"
+                    _by_lcg = _pc.groupby("LCG").agg(
+                        TotalItems=("TotalItems", "sum"),
+                        TotalCost=("TotalCost", "sum"),
+                        RegisteredPatients=("RegisteredPatients", "sum"),
+                    ).reset_index()
+                    _by_lcg["ItemsPer1000"] = _by_lcg["TotalItems"] / _by_lcg["RegisteredPatients"] * 1000
+                    _by_lcg["CostPer1000"] = _by_lcg["TotalCost"] / _by_lcg["RegisteredPatients"] * 1000
+                    _by_lcg["Therapeutic area"] = _disp
+                    _lcg_bar_rows.append(_by_lcg)
+
+                if _lcg_bar_rows:
+                    _lcg_bar = pd.concat(_lcg_bar_rows, ignore_index=True)
+                    _lcg_val_col = "ItemsPer1000" if "Items" in _cmp_metric else "CostPer1000"
+                    _lcg_order = sorted(_lcg_bar["LCG"].unique())
+                    _n_ta = len(_compare_selected)
+                    _bar_width = 0.8 / _n_ta
+
+                    fig_lcg_bar, ax_lcg_bar = plt.subplots(figsize=(12, 5))
+                    for _ci, _ta in enumerate(_compare_selected):
+                        _disp = _pq_to_app.get(_ta, _ta)
+                        _sub = _lcg_bar[_lcg_bar["Therapeutic area"] == _disp]
+                        _vals = []
+                        for _lcg_name in _lcg_order:
+                            _row = _sub[_sub["LCG"] == _lcg_name]
+                            _vals.append(_row[_lcg_val_col].iloc[0] if not _row.empty else 0)
+                        _x = np.arange(len(_lcg_order))
+                        ax_lcg_bar.bar(_x + _ci * _bar_width, _vals, width=_bar_width,
+                                       label=_disp, color=_cmp_colours[_ci % len(_cmp_colours)], alpha=0.85)
+                    ax_lcg_bar.set_xticks(np.arange(len(_lcg_order)) + _bar_width * (_n_ta - 1) / 2)
+                    ax_lcg_bar.set_xticklabels(_lcg_order, rotation=30, ha="right", fontsize=9)
+                    ax_lcg_bar.set_ylabel(_cmp_metric, fontsize=10)
+                    ax_lcg_bar.legend(fontsize=9)
+                    ax_lcg_bar.grid(axis="y", alpha=0.3)
+                    ax_lcg_bar.spines["top"].set_visible(False)
+                    ax_lcg_bar.spines["right"].set_visible(False)
+                    fig_lcg_bar.tight_layout()
+                    st.pyplot(fig_lcg_bar)
+                    plt.close(fig_lcg_bar)
+
+                # ── Federation comparison (snapshot bar chart) ──
+                st.divider()
+                st.subheader("By GP Federation")
+                st.caption("Snapshot: Oct–Dec 2025 monthly average per 1,000 registered patients")
+
+                _fed_bar_rows = []
+                for _ta in _compare_selected:
+                    _disp = _pq_to_app.get(_ta, _ta)
+                    _ta_def = THERAPEUTIC_AREAS.get(_disp)
+                    if _ta_def and _ta_def["filter"] is not None:
+                        _pc = per_cap(merged, _ta_def["filter"])
+                    else:
+                        continue
+                    # Join federation info
+                    _pc["_pkey"] = _pc["Practice"].str.strip()
+                    _fed_map = practices[["PracNo", "Federation"]].copy()
+                    _fed_map["_pkey"] = _fed_map["PracNo"].str.strip()
+                    _pc = _pc.merge(_fed_map[["_pkey", "Federation"]], on="_pkey", how="left")
+                    _pc["Federation"] = _pc["Federation"].str.strip()
+                    _pc = _pc.dropna(subset=["Federation"])
+
+                    _by_fed = _pc.groupby("Federation").agg(
+                        TotalItems=("TotalItems", "sum"),
+                        TotalCost=("TotalCost", "sum"),
+                        RegisteredPatients=("RegisteredPatients", "sum"),
+                        Practices=("Practice", "nunique"),
+                    ).reset_index()
+                    _by_fed["ItemsPer1000"] = _by_fed["TotalItems"] / _by_fed["RegisteredPatients"] * 1000
+                    _by_fed["CostPer1000"] = _by_fed["TotalCost"] / _by_fed["RegisteredPatients"] * 1000
+                    _by_fed["Therapeutic area"] = _disp
+                    _fed_bar_rows.append(_by_fed)
+
+                if _fed_bar_rows:
+                    _fed_bar = pd.concat(_fed_bar_rows, ignore_index=True)
+                    _fed_val_col = "ItemsPer1000" if "Items" in _cmp_metric else "CostPer1000"
+
+                    # Sort federations by the first selected TA's value
+                    _first_ta_disp = _pq_to_app.get(_compare_selected[0], _compare_selected[0])
+                    _sort_df = _fed_bar[_fed_bar["Therapeutic area"] == _first_ta_disp].sort_values(_fed_val_col, ascending=True)
+                    _fed_order = _sort_df["Federation"].tolist()
+
+                    _n_ta = len(_compare_selected)
+                    _bar_height = 0.8 / _n_ta
+
+                    fig_fed, ax_fed = plt.subplots(figsize=(12, max(6, len(_fed_order) * 0.4)))
+                    for _ci, _ta in enumerate(_compare_selected):
+                        _disp = _pq_to_app.get(_ta, _ta)
+                        _sub = _fed_bar[_fed_bar["Therapeutic area"] == _disp]
+                        _vals = []
+                        for _fed_name in _fed_order:
+                            _row = _sub[_sub["Federation"] == _fed_name]
+                            _vals.append(_row[_fed_val_col].iloc[0] if not _row.empty else 0)
+                        _y = np.arange(len(_fed_order))
+                        ax_fed.barh(_y + _ci * _bar_height, _vals, height=_bar_height,
+                                    label=_disp, color=_cmp_colours[_ci % len(_cmp_colours)], alpha=0.85)
+                    ax_fed.set_yticks(np.arange(len(_fed_order)) + _bar_height * (_n_ta - 1) / 2)
+                    ax_fed.set_yticklabels(_fed_order, fontsize=9)
+                    ax_fed.set_xlabel(_cmp_metric, fontsize=10)
+                    ax_fed.legend(fontsize=9, loc="lower right")
+                    ax_fed.grid(axis="x", alpha=0.3)
+                    ax_fed.spines["top"].set_visible(False)
+                    ax_fed.spines["right"].set_visible(False)
+                    fig_fed.tight_layout()
+                    st.pyplot(fig_fed)
+                    plt.close(fig_fed)
+
+                    # Federation summary table
+                    _fed_table_rows = []
+                    for _fed_name in _fed_order:
+                        _row_data = {"Federation": _fed_name}
+                        for _ta in _compare_selected:
+                            _disp = _pq_to_app.get(_ta, _ta)
+                            _sub = _fed_bar[(_fed_bar["Therapeutic area"] == _disp) & (_fed_bar["Federation"] == _fed_name)]
+                            if not _sub.empty:
+                                _row_data[f"{_disp} (items/1000)"] = round(_sub["ItemsPer1000"].iloc[0], 1)
+                                _row_data[f"{_disp} (cost/1000)"] = round(_sub["CostPer1000"].iloc[0], 1)
+                        _row_data["Practices"] = int(_sort_df[_sort_df["Federation"] == _fed_name]["Practices"].iloc[0]) if _fed_name in _sort_df["Federation"].values else 0
+                        _fed_table_rows.append(_row_data)
+                    with st.expander("Federation data table"):
+                        st.dataframe(pd.DataFrame(_fed_table_rows), hide_index=True, use_container_width=True)
+
+                # ── LCG time series ──
+                if ta_practice is not None:
+                    st.divider()
+                    st.subheader("LCG Time Series")
+                    st.caption("Monthly trends by LCG for each selected therapeutic area (per 1,000 patients)")
+
+                    # Build practice→LCG mapping
+                    _ts_prac_lcg = practices[["PracNo", "LCG"]].copy()
+                    _ts_prac_lcg["_pkey"] = pd.to_numeric(_ts_prac_lcg["PracNo"], errors="coerce").astype("Int64")
+                    _ts_prac_lcg["LCG"] = _ts_prac_lcg["LCG"].str.strip()
+
+                    # Population by LCG and year
+                    _ts_pop_prac = starpu_prac[starpu_prac["bnf_chapter"] == 1][["year", "practice", "total_population"]].copy()
+                    _ts_pop_prac["_pkey"] = _ts_pop_prac["practice"].astype("Int64")
+                    _ts_pop_prac = _ts_pop_prac.merge(_ts_prac_lcg[["_pkey", "LCG"]], on="_pkey", how="left")
+                    _ts_lcg_pop = _ts_pop_prac.groupby(["year", "LCG"])["total_population"].sum().reset_index()
+                    _ts_latest_lcg_pop = _ts_lcg_pop[_ts_lcg_pop["year"] == _ts_lcg_pop["year"].max()][["LCG", "total_population"]].copy()
+
+                    _lcg_colours_cmp = {
+                        "Belfast": "#e11d48", "Northern": "#2563eb",
+                        "South Eastern": "#16a34a", "Southern": "#d97706", "Western": "#7c3aed",
+                    }
+
+                    # One chart per selected TA, with LCG lines
+                    _n_cmp_ta = len(_compare_selected)
+                    _cols_per_row = min(_n_cmp_ta, 2)
+                    if _n_cmp_ta <= 2:
+                        fig_lcg_ts, axes_lcg_ts = plt.subplots(1, _n_cmp_ta, figsize=(7 * _n_cmp_ta, 5), squeeze=False)
+                        axes_lcg_ts = axes_lcg_ts[0]
+                    else:
+                        _nrows = (_n_cmp_ta + 1) // 2
+                        fig_lcg_ts, axes_lcg_ts = plt.subplots(_nrows, 2, figsize=(14, 5 * _nrows), squeeze=False)
+                        axes_lcg_ts = axes_lcg_ts.flatten()
+
+                    for _ci, _ta in enumerate(_compare_selected):
+                        ax_lt = axes_lcg_ts[_ci]
+                        _disp = _pq_to_app.get(_ta, _ta)
+                        _ta_prac_data = ta_practice[ta_practice["therapeutic_area"] == _ta].copy()
+                        _ta_prac_data["_pkey"] = pd.to_numeric(_ta_prac_data["practice"], errors="coerce").astype("Int64")
+                        _ta_prac_data = _ta_prac_data.merge(_ts_prac_lcg[["_pkey", "LCG"]], on="_pkey", how="left")
+                        _ta_prac_data = _ta_prac_data.dropna(subset=["LCG"])
+                        _ta_prac_data["date"] = pd.to_datetime(
+                            _ta_prac_data["year"].astype(int).astype(str) + "-" +
+                            _ta_prac_data["month"].astype(int).astype(str).str.zfill(2) + "-01"
+                        )
+
+                        _lcg_agg_ts = _ta_prac_data.groupby(["LCG", "date", "year"]).agg(
+                            total_items=("total_items", "sum"),
+                            total_cost=("total_cost", "sum"),
+                        ).reset_index()
+                        _lcg_agg_ts["year"] = _lcg_agg_ts["year"].astype(int)
+                        _lcg_agg_ts = _lcg_agg_ts.merge(_ts_lcg_pop, on=["year", "LCG"], how="left")
+                        # Forward-fill missing population
+                        if _lcg_agg_ts["total_population"].isna().any():
+                            _lcg_agg_ts = _lcg_agg_ts.merge(
+                                _ts_latest_lcg_pop.rename(columns={"total_population": "_fp"}), on="LCG", how="left"
+                            )
+                            _lcg_agg_ts["total_population"] = _lcg_agg_ts["total_population"].fillna(_lcg_agg_ts["_fp"])
+                            _lcg_agg_ts.drop(columns=["_fp"], inplace=True)
+
+                        if "Items" in _cmp_metric:
+                            _lcg_agg_ts["rate"] = _lcg_agg_ts["total_items"] / _lcg_agg_ts["total_population"] * 1000
+                        else:
+                            _lcg_agg_ts["rate"] = _lcg_agg_ts["total_cost"] / _lcg_agg_ts["total_population"] * 1000
+
+                        for _lcg_name in sorted(_lcg_agg_ts["LCG"].unique()):
+                            _lcg_sub = _lcg_agg_ts[_lcg_agg_ts["LCG"] == _lcg_name].sort_values("date")
+                            _col = _lcg_colours_cmp.get(_lcg_name, "#666")
+                            if smooth_window > 1:
+                                _lcg_sub = _lcg_sub.copy()
+                                _lcg_sub["rate_s"] = _lcg_sub["rate"].rolling(smooth_window, min_periods=smooth_window).mean()
+                                ax_lt.plot(_lcg_sub["date"], _lcg_sub["rate"], color=_col, linewidth=0.3, alpha=0.1)
+                                ax_lt.plot(_lcg_sub["date"], _lcg_sub["rate_s"], label=_lcg_name, color=_col, linewidth=1.8)
+                            else:
+                                ax_lt.plot(_lcg_sub["date"], _lcg_sub["rate"], label=_lcg_name, color=_col, linewidth=1.2)
+
+                        ax_lt.axvspan(_covid_start, _covid_end, alpha=0.06, color="red")
+                        ax_lt.set_title(_disp, fontsize=11, fontweight="bold")
+                        ax_lt.set_ylim(bottom=0)
+                        ax_lt.grid(axis="y", alpha=0.3)
+                        ax_lt.spines["top"].set_visible(False)
+                        ax_lt.spines["right"].set_visible(False)
+                        if _ci == 0:
+                            ax_lt.set_ylabel(_cmp_metric, fontsize=10)
+                            ax_lt.legend(fontsize=7, loc="best")
+
+                    # Hide unused axes
+                    for _hi in range(_n_cmp_ta, len(axes_lcg_ts)):
+                        axes_lcg_ts[_hi].set_visible(False)
+                    fig_lcg_ts.tight_layout()
+                    st.pyplot(fig_lcg_ts)
+                    plt.close(fig_lcg_ts)
+
+                    # ── Federation time series ──
+                    st.divider()
+                    st.subheader("Federation Time Series")
+                    st.caption("Monthly trends by GP Federation for each selected therapeutic area (per 1,000 patients)")
+
+                    # Build practice→Federation mapping
+                    _ts_prac_fed = practices[["PracNo", "Federation"]].copy()
+                    _ts_prac_fed["_pkey"] = pd.to_numeric(_ts_prac_fed["PracNo"], errors="coerce").astype("Int64")
+                    _ts_prac_fed["Federation"] = _ts_prac_fed["Federation"].str.strip()
+                    _ts_prac_fed = _ts_prac_fed.dropna(subset=["Federation"])
+
+                    # Population by federation and year
+                    _ts_pop_fed = _ts_pop_prac.merge(
+                        _ts_prac_fed[["_pkey", "Federation"]], on="_pkey", how="left"
+                    ).dropna(subset=["Federation"])
+                    _ts_fed_pop = _ts_pop_fed.groupby(["year", "Federation"])["total_population"].sum().reset_index()
+                    _ts_latest_fed_pop = _ts_fed_pop[_ts_fed_pop["year"] == _ts_fed_pop["year"].max()][["Federation", "total_population"]].copy()
+
+                    # Let user pick which federations to show (default: all in highlighted practice's LCG, or top 5)
+                    _all_feds = sorted(_ts_prac_fed["Federation"].unique())
+                    _fed_select = st.multiselect(
+                        "Select federations to display (max 8 recommended)",
+                        options=_all_feds,
+                        default=_all_feds[:5],
+                        key="compare_fed_ts_select",
+                    )
+
+                    if _fed_select:
+                        _fed_ts_colours = plt.cm.tab20(np.linspace(0, 1, max(len(_fed_select), 3)))
+
+                        if _n_cmp_ta <= 2:
+                            fig_fed_ts, axes_fed_ts = plt.subplots(1, _n_cmp_ta, figsize=(7 * _n_cmp_ta, 5), squeeze=False)
+                            axes_fed_ts = axes_fed_ts[0]
+                        else:
+                            _nrows_f = (_n_cmp_ta + 1) // 2
+                            fig_fed_ts, axes_fed_ts = plt.subplots(_nrows_f, 2, figsize=(14, 5 * _nrows_f), squeeze=False)
+                            axes_fed_ts = axes_fed_ts.flatten()
+
+                        for _ci, _ta in enumerate(_compare_selected):
+                            ax_ft = axes_fed_ts[_ci]
+                            _disp = _pq_to_app.get(_ta, _ta)
+                            _ta_prac_data = ta_practice[ta_practice["therapeutic_area"] == _ta].copy()
+                            _ta_prac_data["_pkey"] = pd.to_numeric(_ta_prac_data["practice"], errors="coerce").astype("Int64")
+                            _ta_prac_data = _ta_prac_data.merge(_ts_prac_fed[["_pkey", "Federation"]], on="_pkey", how="left")
+                            _ta_prac_data = _ta_prac_data.dropna(subset=["Federation"])
+                            _ta_prac_data["date"] = pd.to_datetime(
+                                _ta_prac_data["year"].astype(int).astype(str) + "-" +
+                                _ta_prac_data["month"].astype(int).astype(str).str.zfill(2) + "-01"
+                            )
+
+                            _fed_agg_ts = _ta_prac_data[_ta_prac_data["Federation"].isin(_fed_select)].groupby(
+                                ["Federation", "date", "year"]
+                            ).agg(
+                                total_items=("total_items", "sum"),
+                                total_cost=("total_cost", "sum"),
+                            ).reset_index()
+                            _fed_agg_ts["year"] = _fed_agg_ts["year"].astype(int)
+                            _fed_agg_ts = _fed_agg_ts.merge(_ts_fed_pop, on=["year", "Federation"], how="left")
+                            if _fed_agg_ts["total_population"].isna().any():
+                                _fed_agg_ts = _fed_agg_ts.merge(
+                                    _ts_latest_fed_pop.rename(columns={"total_population": "_fp"}), on="Federation", how="left"
+                                )
+                                _fed_agg_ts["total_population"] = _fed_agg_ts["total_population"].fillna(_fed_agg_ts["_fp"])
+                                _fed_agg_ts.drop(columns=["_fp"], inplace=True)
+
+                            if "Items" in _cmp_metric:
+                                _fed_agg_ts["rate"] = _fed_agg_ts["total_items"] / _fed_agg_ts["total_population"] * 1000
+                            else:
+                                _fed_agg_ts["rate"] = _fed_agg_ts["total_cost"] / _fed_agg_ts["total_population"] * 1000
+
+                            for _fi, _fed_name in enumerate(_fed_select):
+                                _fed_sub = _fed_agg_ts[_fed_agg_ts["Federation"] == _fed_name].sort_values("date")
+                                if _fed_sub.empty:
+                                    continue
+                                _col = _fed_ts_colours[_fi % len(_fed_ts_colours)]
+                                if smooth_window > 1:
+                                    _fed_sub = _fed_sub.copy()
+                                    _fed_sub["rate_s"] = _fed_sub["rate"].rolling(smooth_window, min_periods=smooth_window).mean()
+                                    ax_ft.plot(_fed_sub["date"], _fed_sub["rate"], color=_col, linewidth=0.3, alpha=0.1)
+                                    ax_ft.plot(_fed_sub["date"], _fed_sub["rate_s"], label=_fed_name, color=_col, linewidth=1.5)
+                                else:
+                                    ax_ft.plot(_fed_sub["date"], _fed_sub["rate"], label=_fed_name, color=_col, linewidth=1)
+
+                            ax_ft.axvspan(_covid_start, _covid_end, alpha=0.06, color="red")
+                            ax_ft.set_title(_disp, fontsize=11, fontweight="bold")
+                            ax_ft.set_ylim(bottom=0)
+                            ax_ft.grid(axis="y", alpha=0.3)
+                            ax_ft.spines["top"].set_visible(False)
+                            ax_ft.spines["right"].set_visible(False)
+                            if _ci == 0:
+                                ax_ft.set_ylabel(_cmp_metric, fontsize=10)
+                                ax_ft.legend(fontsize=6, loc="best", ncol=2)
+
+                        for _hi in range(_n_cmp_ta, len(axes_fed_ts)):
+                            axes_fed_ts[_hi].set_visible(False)
+                        fig_fed_ts.tight_layout()
+                        st.pyplot(fig_fed_ts)
+                        plt.close(fig_fed_ts)
+
         else:
             st.info("Time series data not available for comparisons.")
 
