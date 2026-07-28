@@ -403,6 +403,43 @@ def load_local_data():
     return merged, practice_df
 
 
+def _shrink(df, categoricals=(), integers=()):
+    """Reduce a frame's resident size without changing any value.
+
+    Two lossless conversions: repeated low-cardinality text becomes a
+    category (each distinct string is then stored once, not once per row),
+    and float columns holding only whole numbers become the narrowest
+    integer type that fits. Columns containing nulls or genuine decimals
+    are left untouched.
+
+    This matters more than it first appears — Streamlit's cache hands every
+    browser session its own copy of these frames, so the saving multiplies
+    by the number of concurrent visitors.
+    """
+    for col in categoricals:
+        if col in df.columns and not isinstance(df[col].dtype, pd.CategoricalDtype):
+            df[col] = df[col].astype("category")
+
+    for col in integers:
+        if col not in df.columns:
+            continue
+        s = df[col]
+        if not pd.api.types.is_numeric_dtype(s):
+            continue
+        vals = s.dropna()
+        if len(vals) == 0 or (vals % 1 != 0).any():
+            continue          # real decimals — narrowing would lose precision
+        if s.isna().any():
+            # An int column cannot hold NaN, so use float32 instead. Whole
+            # numbers below 2**24 are represented exactly, so this is lossless.
+            if vals.abs().max() < 2 ** 24:
+                df[col] = s.astype("float32")
+        else:
+            df[col] = pd.to_numeric(s, downcast="integer")
+
+    return df
+
+
 @st.cache_data(show_spinner="Loading data…")
 def load_data():
     """
@@ -424,7 +461,12 @@ def load_data():
     if os.path.exists(PARQUET_PRESCRIBING) and os.path.exists(PARQUET_PRACTICES):
         practices = pd.read_parquet(PARQUET_PRACTICES)
         prescribing = pd.read_parquet(PARQUET_PRESCRIBING)
-        merged = prescribing  # Already merged when parquet was created
+        merged = _shrink(
+            prescribing,  # Already merged when parquet was created
+            categoricals=("Practice", "PracticeName", "LCG", "Trust", "VTM_NM"),
+            integers=("Year", "Month", "RegisteredPatients",
+                      "DepQuintile", "Ward_Dep_Rank", "TotalItems"),
+        )
         # Cache as pickle for faster subsequent loads
         os.makedirs(os.path.dirname(CACHE_FILE), exist_ok=True)
         merged.to_pickle(CACHE_FILE)
@@ -475,10 +517,19 @@ def per_cap(merged, area_filter):
     if "TotalQuantity" in df.columns:
         agg_dict["TotalQuantity"] = ("TotalQuantity", "sum")
     agg = (
-        df.groupby(group_cols)
+        # observed=True: several group_cols are categories, and without this
+        # pandas would emit a row for every unused category combination.
+        df.groupby(group_cols, observed=True)
         .agg(**agg_dict)
         .reset_index()
     )
+    # Group keys come back as categories (see _shrink). Downstream charts do
+    # arithmetic and .map() on them, neither of which categorical dtype
+    # supports, so restore plain dtypes. This frame is one row per practice,
+    # so nothing is saved by keeping it compact here.
+    for col in agg.columns:
+        if isinstance(agg[col].dtype, pd.CategoricalDtype):
+            agg[col] = agg[col].astype(agg[col].cat.categories.dtype)
     # Monthly average per capita
     agg["TotalItems"] = agg["TotalItems"] / n_months
     agg["TotalCost"] = agg["TotalCost"] / n_months
@@ -532,7 +583,11 @@ def load_timeseries_lcg():
             df["year"].astype(str) + "-" + df["month"].astype(str).str.zfill(2) + "-01"
         )
         df["chapter_name"] = df["bnf_chapter"].map(BNF_CHAPTERS).fillna("Unknown")
-        return df
+        return _shrink(
+            df,
+            categoricals=("lcg", "chapter_name"),
+            integers=("year", "month", "bnf_chapter"),
+        )
     return None
 
 
@@ -547,7 +602,18 @@ def load_timeseries_practice():
             df["year"].astype(str) + "-" + df["month"].astype(str).str.zfill(2) + "-01"
         )
         df["chapter_name"] = df["bnf_chapter"].map(BNF_CHAPTERS).fillna("Unknown")
-        return df
+        # These four are in the parquet but nothing in the app reads them;
+        # at ~1m rows each they are pure overhead. Per-capita figures are
+        # derived on the fly from total_population where they are needed.
+        df = df.drop(columns=[c for c in ("gross_cost", "items_per_capita",
+                                          "cost_per_capita", "quantity_per_capita")
+                              if c in df.columns])
+        return _shrink(
+            df,
+            categoricals=("chapter_name",),
+            integers=("year", "month", "bnf_chapter", "practice",
+                      "total_population", "total_items"),
+        )
     return None
 
 
@@ -575,7 +641,11 @@ def load_ta_practice():  # v4 – deduped Oct-Dec 2025
         df["date"] = pd.to_datetime(
             df["year"].astype(str) + "-" + df["month"].astype(str).str.zfill(2) + "-01"
         )
-        return df
+        return _shrink(
+            df,
+            categoricals=("therapeutic_area",),
+            integers=("year", "month", "practice", "total_items"),
+        )
     return None
 
 
@@ -583,7 +653,10 @@ def load_ta_practice():  # v4 – deduped Oct-Dec 2025
 def load_starpu_practice():
     """Load practice-level STAR-PU denominators by year and chapter (v2 – NI weights)."""
     if os.path.exists(PARQUET_STARPU_PRACTICE):
-        return pd.read_parquet(PARQUET_STARPU_PRACTICE)
+        return _shrink(
+            pd.read_parquet(PARQUET_STARPU_PRACTICE),
+            integers=("year", "practice", "bnf_chapter", "total_population"),
+        )
     return None
 
 
