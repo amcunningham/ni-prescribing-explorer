@@ -403,43 +403,6 @@ def load_local_data():
     return merged, practice_df
 
 
-def _shrink(df, categoricals=(), integers=()):
-    """Reduce a frame's resident size without changing any value.
-
-    Two lossless conversions: repeated low-cardinality text becomes a
-    category (each distinct string is then stored once, not once per row),
-    and float columns holding only whole numbers become the narrowest
-    integer type that fits. Columns containing nulls or genuine decimals
-    are left untouched.
-
-    This matters more than it first appears — Streamlit's cache hands every
-    browser session its own copy of these frames, so the saving multiplies
-    by the number of concurrent visitors.
-    """
-    for col in categoricals:
-        if col in df.columns and not isinstance(df[col].dtype, pd.CategoricalDtype):
-            df[col] = df[col].astype("category")
-
-    for col in integers:
-        if col not in df.columns:
-            continue
-        s = df[col]
-        if not pd.api.types.is_numeric_dtype(s):
-            continue
-        vals = s.dropna()
-        if len(vals) == 0 or (vals % 1 != 0).any():
-            continue          # real decimals — narrowing would lose precision
-        if s.isna().any():
-            # An int column cannot hold NaN, so use float32 instead. Whole
-            # numbers below 2**24 are represented exactly, so this is lossless.
-            if vals.abs().max() < 2 ** 24:
-                df[col] = s.astype("float32")
-        else:
-            df[col] = pd.to_numeric(s, downcast="integer")
-
-    return df
-
-
 @st.cache_data(show_spinner="Loading data…")
 def load_data():
     """
@@ -461,12 +424,7 @@ def load_data():
     if os.path.exists(PARQUET_PRESCRIBING) and os.path.exists(PARQUET_PRACTICES):
         practices = pd.read_parquet(PARQUET_PRACTICES)
         prescribing = pd.read_parquet(PARQUET_PRESCRIBING)
-        merged = _shrink(
-            prescribing,  # Already merged when parquet was created
-            categoricals=("Practice", "PracticeName", "LCG", "Trust", "VTM_NM"),
-            integers=("Year", "Month", "RegisteredPatients",
-                      "DepQuintile", "Ward_Dep_Rank", "TotalItems"),
-        )
+        merged = prescribing  # Already merged when parquet was created
         # Cache as pickle for faster subsequent loads
         os.makedirs(os.path.dirname(CACHE_FILE), exist_ok=True)
         merged.to_pickle(CACHE_FILE)
@@ -517,19 +475,10 @@ def per_cap(merged, area_filter):
     if "TotalQuantity" in df.columns:
         agg_dict["TotalQuantity"] = ("TotalQuantity", "sum")
     agg = (
-        # observed=True: several group_cols are categories, and without this
-        # pandas would emit a row for every unused category combination.
-        df.groupby(group_cols, observed=True)
+        df.groupby(group_cols)
         .agg(**agg_dict)
         .reset_index()
     )
-    # Group keys come back as categories (see _shrink). Downstream charts do
-    # arithmetic and .map() on them, neither of which categorical dtype
-    # supports, so restore plain dtypes. This frame is one row per practice,
-    # so nothing is saved by keeping it compact here.
-    for col in agg.columns:
-        if isinstance(agg[col].dtype, pd.CategoricalDtype):
-            agg[col] = agg[col].astype(agg[col].cat.categories.dtype)
     # Monthly average per capita
     agg["TotalItems"] = agg["TotalItems"] / n_months
     agg["TotalCost"] = agg["TotalCost"] / n_months
@@ -574,7 +523,7 @@ def load_prevalence():
 
 @st.cache_data(show_spinner="Loading time-series data…")
 def load_timeseries_lcg():
-    """Load LCG-level monthly standardised rates (all 154 months)."""
+    """Load LCG-level monthly standardised rates (every month in the parquet)."""
     if os.path.exists(PARQUET_TS_LCG):
         df = pd.read_parquet(PARQUET_TS_LCG)
         df["year"] = df["year"].astype(int)
@@ -583,17 +532,33 @@ def load_timeseries_lcg():
             df["year"].astype(str) + "-" + df["month"].astype(str).str.zfill(2) + "-01"
         )
         df["chapter_name"] = df["bnf_chapter"].map(BNF_CHAPTERS).fillna("Unknown")
-        return _shrink(
-            df,
-            categoricals=("lcg", "chapter_name"),
-            integers=("year", "month", "bnf_chapter"),
-        )
+        return df
     return None
+
+
+@st.cache_data(show_spinner=False)
+def timeseries_range_label():
+    """Describe the period the monthly parquets actually cover.
+
+    Read from the data rather than hardcoded, so the caption stays honest
+    after every rebuild instead of drifting until someone notices.
+    """
+    import calendar as cal_mod
+    try:
+        ts = pd.read_parquet(PARQUET_PRESC_PRACTICE, columns=["year", "month"])
+    except Exception:
+        return "period unavailable"
+    periods = (ts["year"].astype(int) * 100 + ts["month"].astype(int)).unique()
+    if len(periods) == 0:
+        return "period unavailable"
+    lo, hi = int(periods.min()), int(periods.max())
+    fmt = lambda p: f"{cal_mod.month_name[p % 100]} {p // 100}"
+    return f"{fmt(lo)} \u2013 {fmt(hi)} ({len(periods)} months)"
 
 
 @st.cache_data(show_spinner="Loading practice time-series data…")
 def load_timeseries_practice():
-    """Load practice-level monthly standardised rates (all 154 months)."""
+    """Load practice-level monthly standardised rates (every month in the parquet)."""
     if os.path.exists(PARQUET_TS_PRACTICE):
         df = pd.read_parquet(PARQUET_TS_PRACTICE)
         df["year"] = df["year"].astype(int)
@@ -602,18 +567,7 @@ def load_timeseries_practice():
             df["year"].astype(str) + "-" + df["month"].astype(str).str.zfill(2) + "-01"
         )
         df["chapter_name"] = df["bnf_chapter"].map(BNF_CHAPTERS).fillna("Unknown")
-        # These four are in the parquet but nothing in the app reads them;
-        # at ~1m rows each they are pure overhead. Per-capita figures are
-        # derived on the fly from total_population where they are needed.
-        df = df.drop(columns=[c for c in ("gross_cost", "items_per_capita",
-                                          "cost_per_capita", "quantity_per_capita")
-                              if c in df.columns])
-        return _shrink(
-            df,
-            categoricals=("chapter_name",),
-            integers=("year", "month", "bnf_chapter", "practice",
-                      "total_population", "total_items"),
-        )
+        return df
     return None
 
 
@@ -641,11 +595,7 @@ def load_ta_practice():  # v4 – deduped Oct-Dec 2025
         df["date"] = pd.to_datetime(
             df["year"].astype(str) + "-" + df["month"].astype(str).str.zfill(2) + "-01"
         )
-        return _shrink(
-            df,
-            categoricals=("therapeutic_area",),
-            integers=("year", "month", "practice", "total_items"),
-        )
+        return df
     return None
 
 
@@ -653,10 +603,7 @@ def load_ta_practice():  # v4 – deduped Oct-Dec 2025
 def load_starpu_practice():
     """Load practice-level STAR-PU denominators by year and chapter (v2 – NI weights)."""
     if os.path.exists(PARQUET_STARPU_PRACTICE):
-        return _shrink(
-            pd.read_parquet(PARQUET_STARPU_PRACTICE),
-            integers=("year", "practice", "bnf_chapter", "total_population"),
-        )
+        return pd.read_parquet(PARQUET_STARPU_PRACTICE)
     return None
 
 
@@ -888,7 +835,7 @@ def main():
             parts.append(label)
 
         st.caption(f"**Snapshot data** (caterpillar charts, practice comparisons, deprivation): **{', '.join(parts)}** · Monthly average using {len(used_months)} complete month{'s' if len(used_months) != 1 else ''}")
-        st.caption("**Time series data** (NI trends, LCG breakdowns): April 2013 – January 2026 (154 months)")
+        st.caption(f"**Time series data** (NI trends, LCG breakdowns): {timeseries_range_label()}")
 
     # ════════════════════════════════════════════════════════════════════
     # RESTRUCTURED SIDEBAR
@@ -1247,7 +1194,7 @@ def main():
         if ts_lcg is not None:
             st.divider()
             st.subheader("NI Prescribing Trends")
-            st.caption("Monthly data from April 2013 to January 2026 (154 months)")
+            st.caption(f"Monthly data from {timeseries_range_label()}")
 
             if sidebar_drug:
                 st.info(f"📊 Time series data is not yet available for individual drugs. "
@@ -1511,7 +1458,7 @@ QOF (Quality and Outcomes Framework) clinical achievement statistics.
 
 | Source | Period | Licence |
 |--------|--------|---------|
-| GP Prescribing Data | April 2013 – January 2026 (154 monthly files from OpenDataNI) | Open Government Licence |
+| GP Prescribing Data | """ + timeseries_range_label() + """ from OpenDataNI | Open Government Licence |
 | GP Practice List Sizes | April 2023 reference file | Open Government Licence |
 | QOF Clinical Achievement | 2022/23 | HSCB |
 | NI Multiple Deprivation Measure | 2017 | NISRA |
@@ -2901,7 +2848,7 @@ please contact [Anne Marie Cunningham](mailto:anne.marie.cunningham@gmail.com).
                         for lcg in lcg_names
                     ]
                     bp = ax_box.boxplot(
-                        b_data, tick_labels=lcg_names, patch_artist=True,
+                        b_data, labels=lcg_names, patch_artist=True,
                     )
                     for patch, lcg in zip(bp["boxes"], lcg_names):
                         patch.set_facecolor(LCG_COLOURS.get(lcg, "#ccc"))
@@ -2946,7 +2893,7 @@ please contact [Anne Marie Cunningham](mailto:anne.marie.cunningham@gmail.com).
                     ]
                     bp = ax_box.boxplot(
                         b_data,
-                        tick_labels=[
+                        labels=[
                             QUINTILE_LABELS.get(int(q), f"Q{int(q)}")
                             for q in quintiles
                         ],
