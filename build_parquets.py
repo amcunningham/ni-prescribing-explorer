@@ -143,10 +143,23 @@ def read_prescribing_csv(path):
 
     for col in ("practice", "year", "month", "total_items", "total_cost",
                 "gross_cost", "total_quantity", "bnf_chapter"):
-        # Older files write thousands separators into the numeric columns.
-        if df[col].dtype == object:
-            df[col] = df[col].astype(str).str.replace(",", "", regex=False)
+        # Older files write thousands separators, and some carry a stray
+        # currency symbol, so a column can arrive as text. Test with
+        # is_numeric_dtype rather than `dtype == object`: under pandas 3.0
+        # text columns report dtype 'str', so the object test would skip the
+        # cleaning and to_numeric would silently turn every value into NaN.
+        if not pd.api.types.is_numeric_dtype(df[col]):
+            df[col] = (df[col].astype(str)
+                              .str.replace(",", "", regex=False)
+                              .str.replace("£", "", regex=False)
+                              .str.strip())
+        before = df[col].notna().sum()
         df[col] = pd.to_numeric(df[col], errors="coerce")
+        lost = before - df[col].notna().sum()
+        if lost > 0.01 * max(1, before):
+            print(f"      ! {os.path.basename(path)}: {lost:,} of {before:,} "
+                  f"values in '{col}' would not parse as numbers — check this "
+                  f"file's format before trusting the totals")
 
     df["vtm_nm"] = df["vtm_nm"].astype(str).str.strip()
     return df.dropna(subset=["practice", "year", "month"])
@@ -228,6 +241,29 @@ def build_practices(out_dir, existing_dir):
     return practices
 
 
+def build_lcg_map(ref_files):
+    """practice → LCG for every practice that has EVER appeared, not just current ones.
+
+    The LCG series runs back to 2013, so it has to include practices that have
+    since closed or merged. Mapping from the latest reference file alone silently
+    drops them — about 8% of 2013 items, tapering to nothing by 2025, which bends
+    the historical trend upward. Reading every quarterly file and keeping each
+    practice's most recent LCG fixes that.
+    """
+    frames = []
+    for path in ref_files:
+        d = read_practice_reference(path)[["PracNo", "LCG"]].copy()
+        d["src"] = os.path.basename(path)
+        frames.append(d)
+    allm = pd.concat(frames, ignore_index=True)
+    allm["LCG"] = allm["LCG"].astype(str).str.replace(r"\s+", " ", regex=True).str.strip()
+    latest = (allm.sort_values("src").groupby("PracNo", as_index=False).last()
+                  [["PracNo", "LCG"]]
+                  .rename(columns={"PracNo": "practice", "LCG": "lcg"}))
+    latest["practice"] = latest["practice"].astype("Int64")
+    return latest
+
+
 def scan_prescribing(csv_files, snapshot_periods):
     """One pass over every monthly CSV, accumulating each aggregate we need."""
     monthly, ta_rows, snapshot = [], [], []
@@ -237,10 +273,13 @@ def scan_prescribing(csv_files, snapshot_periods):
             print(f"    {i}/{len(csv_files)} files")
         df = read_prescribing_csv(path)
 
-        # 'VTM_NM' is '-' for items with no mapped virtual therapeutic moiety
-        # (appliances, dressings, unclassified). The quantity on those rows is
-        # not a per-drug figure and must not be summed — see the note in the
-        # script header.
+        # 'VTM_NM' is '-' for items with no mapped virtual therapeutic moiety —
+        # dressings, appliances, unclassified products. In the RAW data these
+        # rows carry genuine per-row quantities, so they are kept everywhere
+        # except therapeutic-area matching, where they can never match a drug
+        # name anyway. (The old prescribing.parquet had the practice-month
+        # total broadcast onto every one of these rows, which inflated the
+        # quantity metric roughly thirtyfold. Aggregating per row fixes it.)
         named = df[df["vtm_nm"] != "-"]
 
         monthly.append(
@@ -266,9 +305,9 @@ def scan_prescribing(csv_files, snapshot_periods):
             ta_rows.append(agg)
 
         if snapshot_periods:
-            in_snap = named[
+            in_snap = df[
                 pd.MultiIndex.from_arrays(
-                    [named["year"].astype(int), named["month"].astype(int)]
+                    [df["year"].astype(int), df["month"].astype(int)]
                 ).isin(snapshot_periods)
             ]
             if not in_snap.empty:
@@ -318,8 +357,10 @@ def main():
 
     print("\nPractices")
     practices = build_practices(out_dir, DATA_DIR)
-    prac_lcg = practices[["PracNo", "LCG"]].rename(columns={"PracNo": "practice"})
-    prac_lcg["practice"] = prac_lcg["practice"].astype("Int64")
+    ref_files = sorted(glob.glob(os.path.join(LIST_SIZE_CSV_DIR, "*.csv")))
+    prac_lcg = build_lcg_map(ref_files)
+    print(f"  LCG map covers {len(prac_lcg)} practices "
+          f"(from all {len(ref_files)} quarterly reference files)")
 
     print("\nScanning prescribing CSVs")
     monthly, ta_rows, snapshot = scan_prescribing(csv_files, snapshot_periods)
@@ -338,15 +379,21 @@ def main():
     # ── monthly LCG × chapter ───────────────────────────────────────────
     pm = practice_monthly.copy()
     pm["practice"] = pm["practice"].astype("Int64")
-    lcg_monthly = (pm.merge(prac_lcg, on="practice", how="left")
-                     .dropna(subset=["LCG"])
-                     .groupby(["LCG", "year", "month", "bnf_chapter"], dropna=False)
+    merged_lcg = pm.merge(prac_lcg, on="practice", how="left")
+    unmapped = merged_lcg[merged_lcg["lcg"].isna()]
+    if len(unmapped):
+        share = unmapped["total_items"].sum() / max(1, merged_lcg["total_items"].sum())
+        print(f"  ! {unmapped['practice'].nunique()} practice(s) never appear in any "
+              f"reference file and are excluded from the LCG series "
+              f"({unmapped['total_items'].sum():,.0f} items, {share:.3%} of the total) "
+              f"— they closed before the first reference file (July 2015)")
+    lcg_monthly = (merged_lcg.dropna(subset=["lcg"])
+                     .groupby(["lcg", "year", "month", "bnf_chapter"], dropna=False)
                      .agg(total_items=("total_items", "sum"),
                           total_cost=("total_cost", "sum"),
                           gross_cost=("gross_cost", "sum"),
                           total_quantity=("total_quantity", "sum"))
                      .reset_index()
-                     .rename(columns={"LCG": "lcg"})
                      .sort_values(["lcg", "year", "month", "bnf_chapter"]))
     lcg_monthly.to_parquet(
         os.path.join(out_dir, "prescribing_lcg_monthly.parquet"), index=False)
