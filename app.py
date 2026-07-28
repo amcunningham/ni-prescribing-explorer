@@ -2828,7 +2828,7 @@ please contact [Anne Marie Cunningham](mailto:anne.marie.cunningham@gmail.com).
                         for lcg in lcg_names
                     ]
                     bp = ax_box.boxplot(
-                        b_data, labels=lcg_names, patch_artist=True,
+                        b_data, tick_labels=lcg_names, patch_artist=True,
                     )
                     for patch, lcg in zip(bp["boxes"], lcg_names):
                         patch.set_facecolor(LCG_COLOURS.get(lcg, "#ccc"))
@@ -2873,7 +2873,7 @@ please contact [Anne Marie Cunningham](mailto:anne.marie.cunningham@gmail.com).
                     ]
                     bp = ax_box.boxplot(
                         b_data,
-                        labels=[
+                        tick_labels=[
                             QUINTILE_LABELS.get(int(q), f"Q{int(q)}")
                             for q in quintiles
                         ],

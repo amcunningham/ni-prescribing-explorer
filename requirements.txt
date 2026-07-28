@@ -1,6 +1,11 @@
-streamlit>=1.30
-pandas>=2.0
-matplotlib>=3.7
-numpy>=1.24
-pyarrow>=14.0
-scipy>=1.11
+# Pinned deliberately: Streamlit Community Cloud reinstalls dependencies on every
+# rebuild, so open-ended ">=" constraints silently pull breaking major releases.
+# These versions are verified to run app.py end-to-end on Python 3.11 and 3.13.
+# Reviewed: July 2026
+streamlit==1.60.0
+pandas==3.0.5
+numpy==2.5.1
+matplotlib==3.11.1
+pyarrow==24.0.0
+scipy==1.18.0
+requests==2.34.2
