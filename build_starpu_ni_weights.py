@@ -7,9 +7,10 @@ from the 2023 Prescribing Formula Review (PFR2024-02), collapsed to
 the 4 BSO age bands (<18, 18-44, 45-64, 65+).
 
 Inputs:
-  - ni_starpu_2023_collapsed_bso_bands.csv   (NI weights by age/sex/chapter)
-  - NI/output/practice_demographics.parquet  (BSO practice populations by age/sex/year)
-  - data/practices.parquet                   (practice → LCG mapping)
+  - data/source/ni_starpu_2023_collapsed_bso_bands.csv  (NI weights by age/sex/chapter)
+  - data/source/practice_demographics.parquet           (BSO practice populations
+                                                         by age/sex/year, 2014-2026)
+  - data/practices.parquet                              (practice → LCG mapping)
 
 Outputs:
   - data/starpu_denominators_practice.parquet
@@ -23,12 +24,12 @@ import pandas as pd
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = os.path.join(SCRIPT_DIR, "data")
 
-WEIGHTS_CSV = os.path.join(
-    SCRIPT_DIR, "..", "prescribing", "ni_starpu_2023_collapsed_bso_bands.csv"
-)
-DEMOGRAPHICS_PARQUET = os.path.join(
-    SCRIPT_DIR, "..", "prescribing", "NI", "output", "practice_demographics.parquet"
-)
+# Both inputs now live in the repo under data/source/ rather than in a
+# sibling ../prescribing/ folder, so this script no longer depends on
+# anything outside the repository. data/source/README.md records where they
+# come from and how to refresh them.
+WEIGHTS_CSV = os.path.join(DATA_DIR, "source", "ni_starpu_2023_collapsed_bso_bands.csv")
+DEMOGRAPHICS_PARQUET = os.path.join(DATA_DIR, "source", "practice_demographics.parquet")
 PRACTICES_PARQUET = os.path.join(DATA_DIR, "practices.parquet")
 
 OUT_PRACTICE = os.path.join(DATA_DIR, "starpu_denominators_practice.parquet")
