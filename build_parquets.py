@@ -488,6 +488,34 @@ def main():
     print(f"  prescribing.parquet: {len(snap):,} rows, "
           f"{snap['Practice'].nunique()} practices")
 
+    # ── build_info.json ─────────────────────────────────────────────────
+    # app.py reads this for its period captions, so they stay correct after a
+    # rebuild instead of being hardcoded and quietly drifting.
+    import json
+    import calendar as _cal
+    _lab = lambda v: f"{_cal.month_name[v % 100]} {v // 100}"
+    _p = sorted({y * 100 + m for y, m in
+                 zip(practice_monthly["year"].astype(int),
+                     practice_monthly["month"].astype(int))})
+    m = re.search(r"(20\d{2})-(\d{2})\.csv$", os.path.basename(ref_files[-1]))
+    ref_label = f"{_cal.month_name[int(m.group(2))]} {m.group(1)}" if m else "latest available"
+    try:
+        _dem = pd.read_parquet(starpu_path, columns=["year"])
+        dem_label = f"{int(_dem['year'].min())}\u2013{int(_dem['year'].max())}"
+    except Exception:
+        dem_label = ""
+    info = {
+        "prescribing_period": f"{_lab(_p[0])} \u2013 {_lab(_p[-1])}",
+        "prescribing_months": len(_p),
+        "list_size_reference": ref_label,
+        "demographics_period": dem_label,
+    }
+    with open(os.path.join(out_dir, "build_info.json"), "w", encoding="utf-8") as fh:
+        json.dump(info, fh, indent=2)
+    print(f"  build_info.json: {info['prescribing_period']} "
+          f"({info['prescribing_months']} months), "
+          f"list sizes {info['list_size_reference']}")
+
     if args.validate:
         print("\nValidation — rebuilt vs current, on overlapping periods")
         compare(out_dir, DATA_DIR)
