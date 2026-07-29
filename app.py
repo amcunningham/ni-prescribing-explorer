@@ -29,8 +29,13 @@ st.set_page_config(
 
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = os.path.join(APP_DIR, "data")
-CACHE_FILE = os.path.join(APP_DIR, ".cache", "merged.pkl")
-CACHE_PRACTICES = os.path.join(APP_DIR, ".cache", "practices.pkl")
+# The pickle cache is keyed by version. Bump CACHE_VERSION whenever the
+# parquet schema or dtypes change: a stale pickle written by an older build
+# silently wins over the parquets in load_data(), which is very hard to
+# diagnose because the app looks fine but serves the wrong data.
+CACHE_VERSION = "v2-2026-07"
+CACHE_FILE = os.path.join(APP_DIR, ".cache", f"merged-{CACHE_VERSION}.pkl")
+CACHE_PRACTICES = os.path.join(APP_DIR, ".cache", f"practices-{CACHE_VERSION}.pkl")
 PARQUET_PRESCRIBING = os.path.join(DATA_DIR, "prescribing.parquet")
 PARQUET_PRACTICES = os.path.join(DATA_DIR, "practices.parquet")
 PARQUET_QOF = os.path.join(DATA_DIR, "qof.parquet")
@@ -404,6 +409,32 @@ def load_local_data():
     return merged, practice_df
 
 
+NUMERIC_COLUMNS = (
+    "TotalItems", "ActualCost", "TotalCost", "TotalQuantity",
+    "RegisteredPatients", "Month", "Year", "Ward_Dep_Rank", "DepQuintile",
+)
+
+
+def normalise_dtypes(df):
+    """Force the columns we do arithmetic on to be numeric, and text to be text.
+
+    Categorical columns are the specific hazard: pandas refuses to divide one
+    (`TypeError` out of Categorical.__array_ufunc__), and a categorical can
+    arrive from a pickle written by a different pandas version, or from a
+    parquet whose strings were dictionary-encoded. Normalising once here means
+    no downstream chart has to defend itself.
+    """
+    if df is None:
+        return df
+    for col in df.columns:
+        if isinstance(df[col].dtype, pd.CategoricalDtype):
+            df[col] = df[col].astype(df[col].cat.categories.dtype)
+    for col in NUMERIC_COLUMNS:
+        if col in df.columns and not pd.api.types.is_numeric_dtype(df[col]):
+            df[col] = pd.to_numeric(df[col], errors="coerce")
+    return df
+
+
 @st.cache_data(show_spinner="Loading data…")
 def load_data():
     """
@@ -418,7 +449,7 @@ def load_data():
         merged = pd.read_pickle(CACHE_FILE)
         practices = pd.read_pickle(CACHE_PRACTICES)
         if "TotalQuantity" in merged.columns:
-            return merged, practices
+            return normalise_dtypes(merged), normalise_dtypes(practices)
         # Stale cache — fall through to rebuild
 
     # 2. Try bundled parquet files
@@ -430,7 +461,7 @@ def load_data():
         os.makedirs(os.path.dirname(CACHE_FILE), exist_ok=True)
         merged.to_pickle(CACHE_FILE)
         practices.to_pickle(CACHE_PRACTICES)
-        return merged, practices
+        return normalise_dtypes(merged), normalise_dtypes(practices)
 
     # 3. Try local CSVs
     merged, practices = load_local_data()
@@ -438,7 +469,7 @@ def load_data():
         os.makedirs(os.path.dirname(CACHE_FILE), exist_ok=True)
         merged.to_pickle(CACHE_FILE)
         practices.to_pickle(CACHE_PRACTICES)
-        return merged, practices
+        return normalise_dtypes(merged), normalise_dtypes(practices)
 
     # 4. Download from OpenDataNI
     return None, None  # Signal that download is needed
